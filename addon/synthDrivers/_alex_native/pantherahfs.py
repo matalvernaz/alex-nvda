@@ -484,11 +484,21 @@ class UDIFReader(io.RawIOBase):
                 out += b"\0" * n
                 self.pos += n
                 break
-            _k, start, length, _s, _l = self.chunks[i]
-            data = self._bytes(i)
+            kind, start, length, source, source_length = self.chunks[i]
             at = self.pos - start
             take = min(n, length - at)
-            out += data[at:at + take]
+            # Installer images can describe gigabytes as one raw or zero span. Read only the requested window instead of caching that entire span.
+            if kind in (ZERO, IGNORE):
+                out += b"\0" * take
+            elif kind == RAW:
+                available = min(take, max(0, source_length - at))
+                self.f.seek(source + at)
+                piece = self.f.read(available)
+                out += piece
+                out += b"\0" * (take - len(piece))
+            else:
+                data = self._bytes(i)
+                out += data[at:at + take]
             self.pos += take
             n -= take
         return bytes(out)
