@@ -1,0 +1,392 @@
+/* tiger_host_shimtab.c -- the table that binds every name above.
+ *
+ * Part of tiger_host.c, which includes it; see there for why this is one
+ * translation unit. */
+
+typedef struct { const char *name; void *fn; } shim;
+static const shim g_shims[] = {
+#ifdef TIGER_UC
+    /* Under emulation these must return memory the guest can dereference, so
+     * they route to the guest arena (tiger_host_uc.c) rather than the host
+     * heap.  Everything built on them -- every cfobj and its string -- then
+     * lands in guest space for free. */
+    { "_malloc",    (void *)sh_uc_malloc  }, { "_free",    (void *)sh_uc_free    },
+    { "_calloc",    (void *)sh_uc_calloc  }, { "_realloc", (void *)sh_uc_realloc },
+#else
+    /* The host's allocator, behind a wrapper that does nothing unless
+     * TIGER_MALLOC_FILL asks it to poison what it hands out -- the instrument
+     * that answers "is the engine reading memory it never wrote?".  It is
+     * not, measurably.  See sh_guest_malloc in tiger_host_shims.c.  calloc
+     * needs no wrapper: zero is its whole contract. */
+    { "_malloc",    (void *)sh_guest_malloc }, { "_free", (void *)free },
+    { "_calloc",    (void *)calloc }, { "_realloc", (void *)sh_guest_realloc },
+#endif
+    { "_memset",    (void *)memset  }, { "_memmove", (void *)sh_memmove },
+    { "_memchr",    (void *)memchr  }, { "_strcmp",  (void *)strcmp  },
+    { "_strchr",    (void *)strchr  }, { "_atoi",    (void *)atoi    },
+    { "_strstr",    (void *)strstr  }, { "_strpbrk", (void *)strpbrk },
+    { "_bcopy",     (void *)sh_bcopy}, { "_bzero",   (void *)sh_bzero},
+    { "_abort",     (void *)sh_abort_ },
+    { "_ceil", (void *)ceil }, { "_floor", (void *)floor },
+    { "_cos",  (void *)cos  }, { "_sin",   (void *)sin   },
+    { "_pow",  (void *)pow  }, { "_sqrt",  (void *)sqrt  },
+    { "_log",  (void *)log  }, { "_log10", (void *)log10 },
+    { "_ceilf", (void *)ceilf }, { "_floorf", (void *)floorf },
+    { "_expf", (void *)expf }, { "_logf", (void *)logf },
+    { "_powf", (void *)powf },
+    /* libgcc 64-bit division.  A stub here is not a missing feature but
+     * arithmetic that quietly returns nothing: Lion sizes an utterance
+     * in 64 bits, so __udivdi3 answering zero rendered one frame and
+     * reported success. */
+    { "___divdi3",  (void *)sh_divdi3  },
+    { "___udivdi3", (void *)sh_udivdi3 },
+    { "___moddi3",  (void *)sh_moddi3  },
+    { "___umoddi3", (void *)sh_umoddi3 },
+    { "_getsectdatafromheader", (void *)sh_getsectdatafromheader },
+    { "_pthread_mutex_init",     (void *)sh_mutex_init     },
+    { "_pthread_mutex_lock",     (void *)sh_mutex_lock     },
+    { "_pthread_mutex_unlock",   (void *)sh_mutex_unlock   },
+    { "_pthread_mutexattr_init", (void *)sh_mutexattr_init },
+    { "_pthread_mutexattr_settype", (void *)sh_mutexattr_settype },
+    { "_newlocale",  (void *)sh_newlocale  },
+    { "_freelocale", (void *)sh_freelocale },
+    { "_gettimeofday", (void *)sh_gettimeofday },
+    { "_pthread_once",           (void *)sh_once           },
+    /* Thread-local storage. libstdc++ keeps its locale and exception
+     * state here, and a stub that always answers NULL corrupts the
+     * heap rather than faulting -- see tiger_host_shims.c. */
+    { "_pthread_key_create",     (void *)sh_pthread_key_create   },
+    { "_pthread_key_delete",     (void *)sh_pthread_key_delete   },
+    { "_pthread_getspecific",    (void *)sh_pthread_getspecific  },
+    { "_pthread_setspecific",    (void *)sh_pthread_setspecific  },
+    /* A *data* symbol: bound to a thunk it is the address of code. */
+    { "___stack_chk_guard",      (void *)&g_stack_chk_guard      },
+    { "___stack_chk_fail",       (void *)sh_stack_chk_fail       },
+    { "_MPCreateQueue",   (void *)sh_mp_create_queue   },
+    { "_MPNotifyQueue",   (void *)sh_mp_notify_queue   },
+    { "_MPWaitOnQueue",   (void *)sh_mp_wait_on_queue  },
+    { "_MPCreateTask",    (void *)sh_mp_create_task    },
+    { "_MPTerminateTask", (void *)sh_mp_terminate_task },
+    { "_UpTime",                  (void *)sh_uptime            },
+    { "_AbsoluteToDuration",      (void *)sh_abs_to_duration   },
+    { "_AbsoluteDeltaToDuration", (void *)sh_abs_delta_to_duration },
+    { "_AddDurationToAbsolute",   (void *)sh_add_duration      },
+    { "_SubDurationFromAbsolute", (void *)sh_sub_duration      },
+    { "_MPCreateCriticalRegion", (void *)sh_mp_create_region },
+    { "_MPEnterCriticalRegion",  (void *)sh_mp_enter_region  },
+    { "_MPExitCriticalRegion",   (void *)sh_mp_exit_region   },
+    { "_CFStringGetCStringPtr", (void *)sh_CFStringGetCStringPtr },
+    { "_CFStringGetLength",     (void *)sh_CFStringGetLength     },
+    { "_CFStringGetCString",    (void *)sh_CFStringGetCString    },
+    /* Lion's lexer reads the text as UTF-16, a character at a time. */
+    { "_CFStringGetCharacters", (void *)sh_CFStringGetCharacters },
+    { "_CFStringGetMaximumSizeForEncoding",
+                             (void *)sh_CFStringGetMaximumSizeForEncoding },
+    { "_CFStringGetMaximumSizeOfFileSystemRepresentation",
+                     (void *)sh_CFStringGetMaximumSizeOfFileSystemRepresentation },
+    { "_CFStringGetFileSystemRepresentation",
+                     (void *)sh_CFStringGetFileSystemRepresentation },
+    { "_CFRetain",  (void *)sh_CFRetain  },
+    { "_CFRelease", (void *)sh_CFRelease },
+    { "_CFBundleCopyResourceURL", (void *)sh_CFBundleCopyResourceURL },
+    { "_CFBundleGetBundleWithIdentifier",
+                              (void *)sh_CFBundleGetBundleWithIdentifier },
+    { "_CFStringCreateWithCStringNoCopy",
+                             (void *)sh_CFStringCreateWithCStringNoCopy },
+    /* Lion's SESpeakCFString copies its argument first; without this the
+     * whole text path answers memFullErr. */
+    { "_CFStringCreateCopy",    (void *)sh_CFStringCreateCopy    },
+    /* Lion's SLDictLookup::Create formats every table name it opens --
+     * CFSTR("%@Eng") over PrefixDictionary, CartLite and CartNames -- so a
+     * stub returning NULL asked the bundle for a resource called nothing and
+     * left the whole dictionary unbuilt.  Neither Tiger nor Leopard imports
+     * this symbol, so nothing before 10.7 can see the difference. */
+    { "_CFStringCreateWithFormat",
+                              (void *)sh_CFStringCreateWithFormat },
+    /* `SLTokenGetText` and `SLHomographGetPhonemes` build their result out of
+     * a raw range and cache it on the token, so a stub caches NULL and the
+     * front end reads through it -- in `MTFEBuilder::PeekToken`, which is
+     * nowhere near either. */
+    { "_CFStringCreateWithCharactersNoCopy",
+                              (void *)sh_CFStringCreateWithCharactersNoCopy },
+    { "_CFStringGetCharacterAtIndex",
+                              (void *)sh_CFStringGetCharacterAtIndex },
+    { "_CFDataCreateWithBytesNoCopy",
+                              (void *)sh_CFDataCreateWithBytesNoCopy },
+    /* The engine's side of the tune hand-off builds its CFData with the
+     * copying constructor; see sh_CFDataCreate and panthera-speech#6. */
+    { "_CFDataCreate",          (void *)sh_CFDataCreate          },
+    /* The melody itself: `SLHomographCopyTune` answers with a CFArray of
+     * CFDictionaries, and both constructors were thunks whose 0 flowed out
+     * of CopyTune as "no tune".  See the container block in tiger_host_cf.c
+     * and panthera-speech#6. */
+    { "_CFDictionaryCreate",    (void *)sh_CFDictionaryCreate    },
+    { "_CFDictionaryCreateCopy", (void *)sh_CFDictionaryCreateCopy },
+    { "_CFDictionaryGetValueIfPresent",
+                                (void *)sh_CFDictionaryGetValueIfPresent },
+    { "_CFArrayCreate",         (void *)sh_CFArrayCreate         },
+    { "_CFArrayCreateMutable",  (void *)sh_CFArrayCreateMutable  },
+    { "_CFArrayAppendValue",    (void *)sh_CFArrayAppendValue    },
+    { "_CFArrayGetCount",       (void *)sh_CFArrayGetCount       },
+    { "_CFArrayGetValueAtIndex", (void *)sh_CFArrayGetValueAtIndex },
+    { "_CFArrayGetTypeID",      (void *)sh_CFArrayGetTypeID      },
+    /* Lion runs its render work through GCD and blocks where Leopard
+     * used Multiprocessing Services.  A stubbed dispatch_sync returns
+     * having done nothing, so the engine finished a render that never
+     * happened and wrote a 46-byte wav. */
+    { "__Block_copy",           (void *)sh_Block_copy            },
+    { "__Block_release",        (void *)sh_Block_release         },
+    /* Called by the engine's own block copy/dispose helpers; thunked, they
+     * silently failed to carry captured __block variables to the heap. */
+    { "__Block_object_assign",  (void *)sh_Block_object_assign   },
+    { "__Block_object_dispose", (void *)sh_Block_object_dispose  },
+    { "_dispatch_sync",         (void *)sh_dispatch_sync         },
+    { "_dispatch_async",        (void *)sh_dispatch_async        },
+    { "_dispatch_sync_f",       (void *)sh_dispatch_sync_f       },
+    { "_dispatch_async_f",      (void *)sh_dispatch_async_f      },
+    { "_dispatch_once",         (void *)sh_dispatch_once         },
+    { "_dispatch_queue_create", (void *)sh_dispatch_queue_create },
+    { "_dispatch_get_global_queue",
+                              (void *)sh_dispatch_get_global_queue },
+    { "_dispatch_source_create",
+                              (void *)sh_dispatch_source_create },
+    { "_dispatch_set_context",  (void *)sh_dispatch_set_context  },
+    { "_dispatch_get_context",  (void *)sh_dispatch_get_context  },
+    { "_dispatch_source_set_cancel_handler_f",
+                   (void *)sh_dispatch_source_set_cancel_handler_f },
+    { "_dispatch_source_set_event_handler_f",
+                   (void *)sh_dispatch_source_set_event_handler_f },
+    { "_dispatch_source_set_timer",
+                              (void *)sh_dispatch_source_set_timer },
+    { "_dispatch_resume",       (void *)sh_dispatch_resume       },
+    { "_dispatch_suspend",      (void *)sh_dispatch_suspend      },
+    { "_dispatch_source_cancel",
+                              (void *)sh_dispatch_source_cancel },
+    { "_dispatch_time",         (void *)sh_dispatch_time         },
+    { "_dispatch_walltime",     (void *)sh_dispatch_walltime     },
+    { "_dispatch_release",      (void *)sh_dispatch_release      },
+    { "_dispatch_retain",       (void *)sh_dispatch_retain       },
+    { "_OSAtomicAdd32Barrier",  (void *)sh_OSAtomicAdd32Barrier  },
+    { "_OSAtomicAdd32",         (void *)sh_OSAtomicAdd32         },
+    /* And its lexer takes a CFLocale -- a NULL one corrupts the heap
+     * rather than faulting, so the crash report names ntdll and nothing
+     * else. */
+    { "_CFLocaleCreate",        (void *)sh_CFLocaleCreate        },
+    { "_CFLocaleGetValue",      (void *)sh_CFLocaleGetValue      },
+    { "_CFStringCompare",       (void *)sh_CFStringCompare       },
+    { "_CFDictionaryGetValue",  (void *)sh_CFDictionaryGetValue  },
+    { "_CFURLCopyFileSystemPath", (void *)sh_CFURLCopyFileSystemPath },
+    { "_CFURLCopyPath",           (void *)sh_CFURLCopyPath           },
+    /* Lion's SpeechDictionary reads its tables through the URL rather
+     * than opening a path, so a stub here left every table NULL. */
+    { "_CFURLCreateDataAndPropertiesFromResource",
+                 (void *)sh_CFURLCreateDataAndPropertiesFromResource },
+    { "_CFDataGetBytePtr",      (void *)sh_CFDataGetBytePtr      },
+    { "_CFDataGetLength",       (void *)sh_CFDataGetLength       },
+    /* The engine's own tuning parameters.  With no TIGER_PARAMS set, the
+     * lookup answers NULL -- exactly what the generic thunk did -- so these
+     * change nothing until asked.  See tiger_host_cf.c. */
+    { "_CFPreferencesCopyAppValue", (void *)sh_CFPreferencesCopyAppValue },
+    { "_CFGetTypeID",             (void *)sh_CFGetTypeID             },
+    { "_CFNumberGetTypeID",       (void *)sh_CFNumberGetTypeID       },
+    { "_CFBooleanGetTypeID",      (void *)sh_CFBooleanGetTypeID      },
+    { "_CFDictionaryGetTypeID",   (void *)sh_CFDictionaryGetTypeID   },
+    { "_CFNumberGetValue",        (void *)sh_CFNumberGetValue        },
+    { "_CFNumberCreate",          (void *)sh_CFNumberCreate          },
+    { "_CFBooleanGetValue",       (void *)sh_CFBooleanGetValue       },
+    { "___CFConstantStringClassReference", (void *)&g_cfstring_class },
+    { "_NewAUGraph",              (void *)sh_NewAUGraph              },
+    { "_AUGraphNewNode",          (void *)sh_AUGraphNewNode          },
+    { "_AUGraphGetNodeInfo",      (void *)sh_AUGraphGetNodeInfo      },
+    /* Lion uses the post-10.5 spellings, which take fewer arguments
+     * rather than the same ones -- see tiger_host_audio.c. */
+    { "_AUGraphAddNode",          (void *)sh_AUGraphAddNode          },
+    { "_AUGraphNodeInfo",         (void *)sh_AUGraphNodeInfo         },
+    { "_AUGraphConnectNodeInput", (void *)sh_AUGraphConnectNodeInput },
+    { "_AUGraphOpen",             (void *)sh_AUGraphOpen             },
+    { "_AUGraphInitialize",       (void *)sh_AUGraphInitialize       },
+    { "_AUGraphStart",            (void *)sh_AUGraphStart            },
+    { "_AUGraphStop",             (void *)sh_AUGraphStop             },
+    { "_AUGraphUninitialize",     (void *)sh_AUGraphUninitialize     },
+    { "_AUGraphIsInitialized",    (void *)sh_AUGraphIsInitialized    },
+    { "_DisposeAUGraph",          (void *)sh_DisposeAUGraph          },
+    { "_AudioUnitSetProperty",    (void *)sh_AudioUnitSetProperty    },
+    /* Leopard's engine reads state back; Tiger's never does. */
+    { "_AudioUnitGetProperty",    (void *)sh_AudioUnitGetProperty    },
+    { "_AudioUnitGetPropertyInfo",
+                                  (void *)sh_AudioUnitGetPropertyInfo },
+    { "_AudioUnitAddPropertyListener",
+                                  (void *)sh_AudioUnitAddPropertyListener },
+    { "_AudioUnitReset",          (void *)sh_AudioUnitReset          },
+    /* Leopard's SpeechDictionary keeps its text normalisation in an SQLite
+     * database; Tiger's imports no SQLite at all. */
+    { "_sqlite3_open",            (void *)sh_sqlite3_open            },
+    { "_sqlite3_close",           (void *)sh_sqlite3_close           },
+    { "_sqlite3_prepare",         (void *)sh_sqlite3_prepare         },
+    /* Lion's spellings.  `column_int64` must be its own function, not an
+     * alias: it returns in edx:eax, so an `int` shim leaves the high word
+     * holding whatever was in edx -- a wrong table offset rather than a
+     * crash. */
+    { "_sqlite3_prepare_v2",      (void *)sh_sqlite3_prepare_v2      },
+    { "_sqlite3_column_int64",    (void *)sh_sqlite3_column_int64    },
+    { "_sqlite3_bind_text",       (void *)sh_sqlite3_bind_text       },
+    { "_sqlite3_step",            (void *)sh_sqlite3_step            },
+    { "_sqlite3_column_int",      (void *)sh_sqlite3_column_int      },
+    { "_sqlite3_reset",           (void *)sh_sqlite3_reset           },
+    { "_sqlite3_finalize",        (void *)sh_sqlite3_finalize        },
+    /* Leopard's SpeechDictionary matches with POSIX regex; Tiger's does not. */
+    { "_regcomp$UNIX2003",        (void *)sh_regcomp                 },
+    { "_regcomp",                 (void *)sh_regcomp                 },
+    { "_regexec",                 (void *)sh_regexec                 },
+    { "_regfree",                 (void *)sh_regfree                 },
+    { "_SoundConverterOpen",      (void *)sh_SoundConverterOpen      },
+    { "_SoundConverterSetInfo",   (void *)sh_SoundConverterSetInfo   },
+    { "_SoundConverterClose",     (void *)sh_SoundConverterClose     },
+    { "_SoundConverterBeginConversion",
+                                  (void *)sh_SoundConverterBeginConversion },
+    { "_SoundConverterFillBuffer",
+                                  (void *)sh_SoundConverterFillBuffer },
+    { "_SoundConverterConvertBuffer",
+                                  (void *)sh_SoundConverterConvertBuffer },
+    { "_SoundConverterEndConversion",
+                                  (void *)sh_SoundConverterEndConversion },
+    { "_NewSoundConverterFillBufferDataUPP",
+                                  (void *)sh_NewFillBufferUPP        },
+    { "_DisposeSoundConverterFillBufferDataUPP",
+                                  (void *)sh_DisposeFillBufferUPP    },
+    /* MEOW_DEBUG in the environment turns on the engine's own commentary. */
+    { "_getenv",                  (void *)getenv                     },
+    /* CoreAudio's converter, which is how Alex decodes. */
+    { "_AudioConverterNew",       (void *)sh_AudioConverterNew       },
+    { "_AudioConverterDispose",   (void *)sh_AudioConverterDispose   },
+    { "_AudioConverterReset",     (void *)sh_AudioConverterReset     },
+    { "_AudioConverterSetProperty", (void *)sh_AudioConverterSetProperty },
+    { "_AudioConverterGetProperty", (void *)sh_AudioConverterGetProperty },
+    { "_AudioConverterGetPropertyInfo",
+                                  (void *)sh_AudioConverterGetPropertyInfo },
+    { "_AudioConverterFillComplexBuffer",
+                                  (void *)sh_AudioConverterFillComplexBuffer },
+    { "_AudioFormatGetProperty",  (void *)sh_AudioFormatGetProperty  },
+    { "_SpeechBusy",              (void *)sh_SpeechBusy              },
+    /* libstdc++, as far as Leopard's engine needs it. */
+    { "__Znwm",   (void *)sh_cxx_new    }, { "__Znam", (void *)sh_cxx_new    },
+    { "__ZdlPv",  (void *)sh_cxx_delete }, { "__ZdaPv", (void *)sh_cxx_delete },
+    { "__ZNSt15_List_node_base6unhookEv",   (void *)sh_list_unhook },
+    { "__ZNSt15_List_node_base4hookEPS_",   (void *)sh_list_hook   },
+    { "__ZNSt15_List_node_base4swapERS_S0_", (void *)sh_list_swap  },
+    { "__ZSt17__throw_bad_allocv",      (void *)sh_throw_bad_alloc   },
+    { "__ZSt20__throw_length_errorPKc", (void *)sh_throw_length_error },
+    { "__ZSt9terminatev",               (void *)sh_terminate         },
+    { "_open",  (void *)sh_open  }, { "_close", (void *)sh_close },
+    { "_read",  (void *)sh_read  }, { "_write", (void *)sh_write },
+    { "_fstat", (void *)sh_fstat },
+    /* 10.6 widened st_ino and gave the wide struct its own symbols, so the
+     * spelling an image imports is the layout it expects.  Missing these was
+     * not a link failure: the stub returned 0, which is *success*, over a
+     * buffer nobody filled -- so Lion's dictionary mapped zero bytes and died
+     * two frames later in SLCartDict. */
+    { "_fstat$INODE64", (void *)sh_fstat64 },
+    { "_stat$INODE64",  (void *)sh_stat64  },
+    { "_mmap",  (void *)sh_mmap  }, { "_munmap", (void *)sh_munmap },
+    { "_madvise", (void *)sh_advise_ok }, { "_mincore", (void *)sh_advise_ok },
+    { "_mlock",   (void *)sh_advise_ok }, { "_munlock", (void *)sh_advise_ok },
+    { "_sprintf", (void *)sh_sprintf }, { "_vsprintf", (void *)sh_vsprintf },
+    { "_fprintf", (void *)sh_fprintf }, { "_printf", (void *)sh_printf },
+    { "_puts",    (void *)sh_puts    },
+    { "___sF",    (void *)g_fake_sF  }, { "___error", (void *)sh_error },
+    { "_cblas_isamax", (void *)sh_isamax }, { "_cblas_sscal", (void *)sh_sscal },
+    { "_cblas_scopy",  (void *)sh_scopy  }, { "_cblas_saxpy", (void *)sh_saxpy },
+    { "_cblas_sdot",   (void *)sh_sdot   }, { "_cblas_snrm2", (void *)sh_snrm2 },
+    { "_cblas_sgemv",  (void *)sh_sgemv  },
+    { "_cblas_sgemm",  (void *)sh_sgemm  },
+    { "_ssyevr_",      (void *)sh_ssyevr },
+    { "__DefaultRuneLocale", (void *)g_rune_locale },
+    /* 10.7's `kSpeech*` property constants are not here on purpose: they are
+     * one family resolved one way, and `lookup_shim` consults
+     * `speech_const_lookup` for them.  Forty-five rows would be forty-five
+     * chances to mistype a name in a way that fails silently. */
+    { "___maskrune", (void *)sh_maskrune },
+    /* Lion's `_l` family: the same functions taking a locale this host has
+     * only one of.  Safe to ignore the trailing argument on cdecl. */
+    { "___maskrune_l",  (void *)sh_maskrune_l   },
+    { "_strncasecmp_l", (void *)sh_strncasecmp_l},
+    { "_strcasecmp_l",  (void *)sh_strcasecmp_l },
+    { "_strncasecmp",   (void *)_strnicmp       },
+    { "_strcasecmp",    (void *)_stricmp        },
+    { "_exp2",          (void *)sh_exp2         },
+    { "_log2f",         (void *)sh_log2f        },
+    { "_sinh",          (void *)sinh            },
+    /* The compiler-emitted spelling of bzero; same function. */
+    { "___bzero",       (void *)sh_bzero        },
+    { "___tolower",  (void *)sh_tolower_ }, { "___toupper", (void *)sh_toupper_ },
+    { "_isdigit",    (void *)sh_isdigit_ },
+    { "_memcmp", (void *)memcmp }, { "_memcpy", (void *)sh_memcpy },
+    { "_strcpy", (void *)strcpy }, { "_strlen", (void *)strlen },
+    { "_atof",   (void *)atof   }, { "_atol",   (void *)atol   },
+    { "_cosf",   (void *)cosf   }, { "_sinf",   (void *)sinf   },
+    { "_strtok_r", (void *)sh_strtok_r },
+    { "_stat",   (void *)sh_stat }, { "_pread", (void *)sh_pread },
+    { "_fcntl",  (void *)sh_fcntl }, { "_getpagesize", (void *)sh_getpagesize },
+    { "_posix_madvise", (void *)sh_advise_ok },
+    { "_exit",   (void *)sh_exit_ }, { "___assert_rtn", (void *)sh_assert_rtn },
+    { "_fputs",  (void *)sh_fputs }, { "_fputc",  (void *)sh_fputc },
+    { "_fwrite", (void *)sh_fwrite }, { "_fflush", (void *)sh_fflush },
+    { "_putchar", (void *)sh_putchar },
+    { "___stderrp", (void *)(g_fake_sF + 2 * 88) },
+    { "___stdoutp", (void *)(g_fake_sF + 1 * 88) },
+    { "_pthread_cond_init",    (void *)sh_cond_init    },
+    { "_pthread_cond_wait",    (void *)sh_cond_wait    },
+    { "_pthread_cond_signal",  (void *)sh_cond_signal  },
+    { "_pthread_cond_destroy", (void *)sh_cond_destroy },
+    { "_pthread_mutex_destroy", (void *)sh_mutex_destroy },
+    { "_pthread_self", (void *)sh_pthread_self },
+    { "_pthread_mach_thread_np", (void *)sh_pthread_self },
+    { "___cxa_atexit", (void *)sh_cxa_atexit },
+    { "___cxa_guard_acquire", (void *)sh_guard_acquire },
+    { "___cxa_guard_release", (void *)sh_guard_release },
+    { "___cxa_pure_virtual",  (void *)sh_pure_virtual  },
+    { "_OSMemoryBarrier", (void *)sh_memory_barrier },
+    /* **`_getenv` was here too, and had never once been reached.**  It mapped
+     * to a stub returning NULL, but `lookup_shim` is a linear first-match and
+     * the real `getenv` is registered two hundred rows above.  So the engine
+     * has always read the host's actual environment -- which is what makes
+     * `MTX_DEBUG=1` and `MEOW_DEBUG=1` work: measured, 207 lines of the
+     * engine's own narration with it set and none without.
+     *
+     * Removed rather than left, because a dead row saying the opposite of what
+     * happens is worse than no row, and this file is where somebody looks to
+     * find out.  Found while writing `docs/macintalk-3.6.md`, which is an
+     * argument for writing documentation. */
+    { "_random",  (void *)sh_random  },
+    { "_srandom", (void *)sh_srandom }, { "_usleep",  (void *)sh_usleep  },
+
+    /* Accelerate, for Alex.  Leopard's concatenative voice time-scales
+     * recorded speech with WSOLA and sends the search to vDSP -- fifty-eight
+     * million calls for one short utterance, every one of them landing in an
+     * empty stub until now.  See tiger_host_accel.c; each signature there was
+     * counted off its call site rather than remembered. */
+    { "_vDSP_svemg",       (void *)sh_vDSP_svemg       },
+    { "_vDSP_vmsb",        (void *)sh_vDSP_vmsb        },
+    { "_vDSP_vmma",        (void *)sh_vDSP_vmma        },
+    { "_vmul",             (void *)sh_vmul             },
+    /* 10.7 correlates its WSOLA search in the frequency domain, which
+     * Leopard never did -- see the note in tiger_host_accel.c. */
+    { "_create_fftsetup",  (void *)sh_create_fftsetup  },
+    { "_destroy_fftsetup", (void *)sh_destroy_fftsetup },
+    { "_fft_zrip",         (void *)sh_fft_zrip         },
+    { "_ctoz",             (void *)sh_ctoz             },
+    { "_ztoc",             (void *)sh_ztoc             },
+    { "_vDSP_zvcmul",      (void *)sh_vDSP_zvcmul      },
+    { "_vDSP_maxvi",       (void *)sh_vDSP_maxvi       },
+    { "_vDSP_vma",         (void *)sh_vDSP_vma         },
+    { "_vDSP_sve",         (void *)sh_vDSP_sve         },
+    { "_vDSP_vclip",       (void *)sh_vDSP_vclip       },
+    { "_vDSP_vramp",       (void *)sh_vDSP_vramp       },
+    { "_catlas_sset",      (void *)sh_catlas_sset      },
+    { "_exp2f",            (void *)sh_exp2f            },
+    { "_CFAbsoluteTimeGetCurrent",
+                           (void *)sh_CFAbsoluteTimeGetCurrent },
+    { "_vDSP_hann_window", (void *)sh_vDSP_hann_window },
+    { "_lrintf",           (void *)sh_lrintf           },
+    { NULL, NULL }
+};

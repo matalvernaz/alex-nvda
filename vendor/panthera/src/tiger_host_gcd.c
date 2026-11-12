@@ -1,0 +1,823 @@
+/* tiger_host_gcd.c -- just enough libdispatch and blocks for Lion.
+ *
+ * Part of tiger_host.c, which includes it; see there for why this is one
+ * translation unit.
+ *
+ * Leopard's MacinTalk uses Multiprocessing Services -- MPCreateTask,
+ * MPWaitOnQueue -- and those are shimmed in tiger_host_shims.c. **Lion's uses
+ * Grand Central Dispatch and blocks**, which is one of the larger differences
+ * between the two engines and the reason 14 of Lion's stubbed symbols get
+ * called where Leopard's equivalents never were.
+ *
+ * A stubbed `dispatch_sync` is not a no-op in the harmless sense: the work is
+ * *in* the block, so the call returns having done nothing and the engine
+ * carries on as though it had. That is how the render reached its `Samples`
+ * stage and produced a 46-byte wav -- a header and no audio, with no error
+ * anywhere.
+ *
+ * General dispatch_async/sync still invoke the block on the calling thread;
+ * callers relying on deferred block execution remain unsupported. Timer
+ * sources now deliver callbacks through their serial target queue, separately
+ * implemented in tiger_host_gcd_queue.c. Running each timer's guest callback
+ * on its own thread broke that queue's serialization and consumed a guest
+ * stack per short-lived timer under emulation.
+ */
+
+/* Defined in tiger_host_fault.c, which is included after this one. */
+static const char *engine_symbol(void *addr);
+
+/* **Every call from here into engine code goes through this.**
+ *
+ * Darwin's i386 ABI requires esp to be 16-byte aligned *at the call*, and the
+ * engine relies on it: `MTBEAudioUnitSoundOutput::QueueSamples` stores a pair
+ * of doubles to `[ebp-0x78]` with `movaps` almost as soon as it is entered,
+ * and that faults outright on a stack Windows aligned to four.  Windows
+ * reports the fault as an access violation reading **0xffffffff**, which names
+ * neither alignment nor the thread that broke it.
+ *
+ * `tiger_host_audio.c` learned this for the pacer thread.  The GCD paths are
+ * new with Lion and are a second front door into exactly the same code -- so
+ * there is one door here, rather than four call sites each remembering. */
+static void enter_engine(void (__cdecl *fn)(void *), void *arg)
+{
+    if (!fn) return;
+#ifdef TIGER_UC
+    if (t_running) {
+        unsigned a = GP(arg);
+        uc_call_nested_args((void *)fn, 1, &a);
+        return;
+    }
+#endif
+    call_aligned1((void *)fn, arg);
+}
+
+/* A block is an object whose fourth word is the function to call, and which
+ * passes itself as the first argument.  The layout is fixed ABI:
+ *
+ *     struct Block_layout { void *isa; int flags; int reserved;
+ *                           void (*invoke)(void *, ...); ... };
+ */
+static void block_invoke(void *block)
+{
+    if (!block) return;
+    enter_engine((void (__cdecl *)(void *))GHOST(((gptr *)block)[3]), block);
+}
+
+/* `Block_copy` moves a stack block to the heap so it can outlive its scope.
+ *
+ * It used to return the same pointer, with a comment saying that was correct
+ * because nothing here deferred a block past the call that supplied it.  The
+ * comment was right about this file and wrong about who else calls: the
+ * dictionary's `SLLexerImpl::SetErrorHandler` copies the engine's error
+ * block and fires it **minutes later**, from `Error()`, long after the stack
+ * frame that built the block has died.  The invoke slot in the dead frame
+ * usually still read as code, so the call landed -- and the block body then
+ * loaded a captured object pointer out of recycled stack and wrote through
+ * it, which is the c0000005 at 0000aa64 that killed the host on every
+ * malformed phoneme (panthera-speech#6's companion crash).
+ *
+ * So this is the Blocks ABI done honestly: a stack block is copied to the
+ * heap, its copy helper runs, releases balance, and `_Block_object_assign` /
+ * `_Block_object_dispose` -- which the engine's helpers call, and which were
+ * thunks returning nothing -- move captured blocks and __block variables
+ * along with it.  Plain object captures are assigned without retain: there
+ * is no Objective-C runtime here to retain with, and the engine's captures
+ * are C++ pointers whose lifetimes its own code manages. */
+/* Blocks are Darwin i386 objects even when the host is AArch64. */
+struct blk_descriptor { unsigned reserved, size; gptr copy, dispose; };
+struct blk_layout {
+    gptr isa;
+    volatile glong flags;
+    int reserved;
+    gptr invoke, descriptor;
+};
+struct blk_byref {
+    gptr isa, forwarding;
+    volatile glong flags;
+    unsigned size;
+    gptr keep, destroy;
+};
+typedef char blk_layout_guest_width[(sizeof(struct blk_layout) == 20) ? 1 : -1];
+typedef char blk_descriptor_guest_width[(sizeof(struct blk_descriptor) == 16) ? 1 : -1];
+typedef char blk_byref_guest_width[(sizeof(struct blk_byref) == 24) ? 1 : -1];
+
+static void block_copy_helper(gptr fn, void *dst, const void *src)
+{
+#ifdef TIGER_UC
+    unsigned args[2] = { GP(dst), GP(src) };
+    if (t_running) { uc_call_nested_args(GHOST(fn), 2, args); return; }
+#endif
+    call_aligned2(GHOST(fn), dst, (void *)src);
+}
+
+#define BLK_REFCOUNT_MASK    0xffff
+#define BLK_NEEDS_FREE       (1 << 24)
+#define BLK_HAS_COPY_DISPOSE (1 << 25)
+#define BLK_IS_GLOBAL        (1 << 28)
+
+#define BLK_FIELD_IS_BLOCK   7
+#define BLK_FIELD_IS_BYREF   8
+
+static void * __cdecl sh_Block_copy(void *block)
+{
+    struct blk_layout *src = (struct blk_layout *)block, *dst;
+    if (!src) return NULL;
+    if (src->flags & BLK_IS_GLOBAL) return src;
+    if (src->flags & BLK_NEEDS_FREE) {           /* already ours, on the heap */
+        InterlockedIncrement(&src->flags);
+        return src;
+    }
+    dst = (struct blk_layout *)GMEM_ALLOC(((struct blk_descriptor *)GHOST(src->descriptor))->size);
+    if (!dst) return NULL;
+    memcpy(dst, src, ((struct blk_descriptor *)GHOST(src->descriptor))->size);
+    dst->flags = (src->flags & ~BLK_REFCOUNT_MASK) | BLK_NEEDS_FREE | 1;
+    if (src->flags & BLK_HAS_COPY_DISPOSE)
+        block_copy_helper(((struct blk_descriptor *)GHOST(src->descriptor))->copy, dst, src);
+    return dst;
+}
+
+static void __cdecl sh_Block_release(void *block)
+{
+    struct blk_layout *blk = (struct blk_layout *)block;
+    if (!blk || (blk->flags & BLK_IS_GLOBAL) || !(blk->flags & BLK_NEEDS_FREE))
+        return;                     /* global, stack, or not ours to free */
+    if (InterlockedDecrement(&blk->flags) & BLK_REFCOUNT_MASK)
+        return;
+    if (blk->flags & BLK_HAS_COPY_DISPOSE)
+        enter_engine((void (__cdecl *)(void *))GHOST(((struct blk_descriptor *)GHOST(blk->descriptor))->dispose), blk);
+    GMEM_FREE(blk);
+}
+
+static void __cdecl sh_Block_object_assign(void *destAddr, const void *object,
+                                           int flags)
+{
+    switch (flags & 0x7f) {          /* BLOCK_BYREF_CALLER rides in bit 7 */
+    case BLK_FIELD_IS_BYREF: {
+        struct blk_byref *src = (struct blk_byref *)GHOST(((struct blk_byref *)object)->forwarding);
+        struct blk_byref *heap;
+        if (src->flags & BLK_NEEDS_FREE) {
+            InterlockedIncrement(&src->flags);
+            /* destAddr is a variable inside the guest's block: four bytes. */
+            *(gptr *)destAddr = GP(src);
+            break;
+        }
+        heap = (struct blk_byref *)GMEM_ALLOC(src->size);
+        if (!heap) { *(gptr *)destAddr = GP(src); break; }
+        memcpy(heap, src, src->size);
+        heap->forwarding = GP(heap);
+        heap->flags = (heap->flags & ~BLK_REFCOUNT_MASK) | BLK_NEEDS_FREE | 1;
+        if (src->flags & BLK_HAS_COPY_DISPOSE)
+            block_copy_helper(heap->keep, heap, src);
+        /* The stack copy forwards to the heap from now on, which is the
+         * whole point of __block: everyone sees one variable. */
+        src->forwarding = GP(heap);
+        *(gptr *)destAddr = GP(heap);
+        break;
+    }
+    case BLK_FIELD_IS_BLOCK:
+        *(gptr *)destAddr = GP(sh_Block_copy((void *)object));
+        break;
+    default:
+        *(gptr *)destAddr = GP((void *)object);
+        break;
+    }
+}
+
+static void __cdecl sh_Block_object_dispose(const void *object, int flags)
+{
+    switch (flags & 0x7f) {
+    case BLK_FIELD_IS_BYREF: {
+        struct blk_byref *b = (struct blk_byref *)GHOST(((struct blk_byref *)object)->forwarding);
+        if (!(b->flags & BLK_NEEDS_FREE)) return;
+        if (InterlockedDecrement(&b->flags) & BLK_REFCOUNT_MASK) return;
+        if (b->flags & BLK_HAS_COPY_DISPOSE)
+            enter_engine((void (__cdecl *)(void *))GHOST(b->destroy), b);
+        GMEM_FREE(b);
+        break;
+    }
+    case BLK_FIELD_IS_BLOCK:
+        sh_Block_release((void *)object);
+        break;
+    default:
+        break;
+    }
+}
+
+static void __cdecl sh_dispatch_sync(void *queue, void *block)
+{
+    (void)queue;
+    block_invoke(block);
+}
+
+static void __cdecl sh_dispatch_async(void *queue, void *block)
+{
+    (void)queue;
+    block_invoke(block);
+}
+
+/* `dispatch_once` with a stub predicate never ran the block at all, which is
+ * the quietest possible way to leave a subsystem uninitialised.  The predicate
+ * is a long the caller owns; anything non-zero means done. */
+static void __cdecl sh_dispatch_once(glong *pred, void *block)
+{
+    if (!pred) { block_invoke(block); return; }
+    if (*pred) return;
+    *pred = 1;
+    block_invoke(block);
+}
+
+/* The `_f` forms take a context and a plain function instead of a block. */
+static void __cdecl sh_dispatch_sync_f(void *queue, void *ctx,
+                                       void (__cdecl *fn)(void *))
+{
+    (void)queue;
+    enter_engine(fn, ctx);
+}
+
+static void __cdecl sh_dispatch_async_f(void *queue, void *ctx,
+                                        void (__cdecl *fn)(void *))
+{
+    (void)queue;
+    enter_engine(fn, ctx);
+}
+
+/* Queues and sources are handles the engine only ever passes back to us, so
+ * they can be any distinct non-NULL pointer.  Returning NULL is what makes a
+ * later `dispatch_resume(NULL)` look like a crash in libdispatch.
+ *
+ * A source is more than a handle, though.  **Lion drives its render loop off a
+ * dispatch timer**: it creates a source, gives it a context and an event
+ * handler, sets an interval, and resumes it -- and then expects that handler
+ * to keep being called.  With all five of those stubbed the engine wrote one
+ * frame and stopped, which is a 46-byte wav and no error.
+ */
+#define DSRC_MAGIC 0x44535243u          /* 'DSRC' */
+
+/* **Lion uses the timer as a one-shot alarm, not as a metronome.**  Every
+ * `dispatch_source_set_timer` it makes passes `DISPATCH_TIME_FOREVER` as the
+ * interval, so the source is meant to fire once at `start` and then wait to be
+ * re-armed -- which is how a render pump asks to be called back when it next
+ * has work, rather than polling.
+ *
+ * A thread that fires immediately on resume and exits therefore gets exactly
+ * one frame out of the engine and is not there when the re-arm arrives. So the
+ * thread has to outlive its firing and wait on an event the re-arm signals,
+ * and `start` has to be honoured rather than ignored.
+ */
+typedef struct {
+    unsigned  magic;
+    void     *ctx;
+    void     *queue;
+    void (__cdecl *handler)(void *);
+    void (__cdecl *cancel_handler)(void *);
+    int       cancel_delivered;
+    volatile unsigned period_ms;        /* 0 = do not repeat after firing */
+    volatile unsigned delay_ms;         /* how long until the next firing */
+    volatile long     armed;            /* set by set_timer, cleared on fire */
+    HANDLE    rearm;                    /* signalled by set_timer */
+    HANDLE    thread;
+    int       starting;                 /* thread handle not yet published */
+    volatile long running;
+    unsigned  fired;
+    int       reaps_graph;              /* the deferred audio-graph stop */
+    /* Cancelled, and reusable once its thread has actually gone.
+     *
+     * **10.6 creates a source per utterance and cancels it again** -- sixteen
+     * of them for one sentence -- where 10.7 keeps a couple for the life of
+     * the session.  Without reclaiming, the pool below is spent by the first
+     * thing said, and every source after that is a bare handle that no timer
+     * and no handler can attach to: the second voice returns one frame and the
+     * channel answers -231 for ever after. */
+    volatile long retired;
+    /* When it was cancelled, so the oldest can be reused first.
+     *
+     * **Cancelling is not quite the end of a source**: the engine still holds
+     * the pointer, and a late `set_context` or `set_event_handler_f` on it
+     * lands on whoever has the slot now.  That is a race rather than a
+     * certainty, and it presented as one -- a 24-voice sweep finishing 2, 7
+     * or 24 voices depending on the run, and finishing every time once
+     * logging slowed it down.
+     *
+     * Snow Leopard releases them from its cancellation handler. That import
+     * was missing, so the old observation that it never releases a source
+     * was a host bug: its TaskRec cleanup never ran. Retirement still waits
+     * for the source thread, including that cleanup, to finish.
+     *
+     * So reuse the *oldest* retired slot instead of the first one found.  A
+     * stale write then has to survive a full lap of the table to land on a
+     * live source, which at sixty-four slots and seventeen sources per
+     * utterance is several utterances of grace. */
+    unsigned  retired_at;
+} dsource;
+
+/* **10.6 creates a source per utterance and cancels it again** -- seventeen
+ * for one short sentence -- where 10.7 keeps a couple for the whole session.
+ * The slots are reclaimed on cancel, so this is headroom rather than a
+ * budget; it was 16, which one Snow Leopard utterance spent by itself. */
+/* **Measured, not chosen: one long 10.6 utterance makes about 95 of these**,
+ * one per unit of work, each cancelled again immediately.  Nearly all of them
+ * reuse a retired slot, so what this number has to cover is how many are alive
+ * at once rather than the total -- but 64 was under even that, and the failure
+ * is an utterance with no worker: silence, and a channel left mid-speech
+ * answering -231 to everything after it. */
+GUEST_STATIC(dsource, g_sources, 256);
+static unsigned g_retire_seq;
+/* Sources created and reused this utterance, under TIGER_FLOAT_STATS.
+ * 10.6 makes one per unit of work and cancels it again, so this is the
+ * number that decides how big the table has to be. */
+static unsigned g_src_made, g_src_reused;
+static int g_nsources;
+/* A source may create its successor while the request thread creates another.
+ * Choosing, closing and clearing a retired slot must be one operation: two
+ * creators otherwise close the same thread handle, or wait on its freed mutex.
+ * No guest callback or blocking thread wait runs under this lock. */
+static volatile LONG g_source_pool_lock;
+static void source_pool_lock(void)
+{ while (InterlockedExchange(&g_source_pool_lock, 1)) Sleep(0); }
+static void source_pool_unlock(void)
+{ InterlockedExchange(&g_source_pool_lock, 0); }
+/* The guest holds these as opaque ids -- and an opaque id is still a number
+ * that has to fit in the guest's 32 bits. */
+GUEST_STATIC(int, g_dispatch_handles, 64);
+static int g_ndispatch;
+
+static void *dispatch_handle(void)
+{
+    int index;
+    /* The macro's own count: sizeof stopped answering for this the moment it
+     * became a pointer to an array rather than the array. */
+    source_pool_lock();
+    index = g_ndispatch++;
+    source_pool_unlock();
+    if (index >= (int)g_dispatch_handles_guest_count)
+        die("dispatch queue handle pool exhausted");
+    return &g_dispatch_handles[index];
+}
+
+static dsource *as_source(void *o)
+{
+    dsource *s = (dsource *)o;
+    return (s && s->magic == DSRC_MAGIC) ? s : NULL;
+}
+
+#include "tiger_host_gcd_queue.c"
+
+static DWORD WINAPI source_thread(LPVOID param)
+{
+    dsource *s = (dsource *)param;
+    while (s->running) {
+        /* Disarmed means "nothing scheduled": wait for a re-arm rather than
+         * spinning or exiting.  Armed means wait out the delay, unless a
+         * re-arm arrives first and changes it. */
+        DWORD ms, r;
+        /* A timer that is already due is delivered without asking Windows
+         * for anything: waiting nought milliseconds on an event still costs
+         * the whole syscall pair, and Lion arms this one for *now* out of its
+         * own handler.
+         *
+         * **This is not what made Lion slow, and the first version of this
+         * comment said it was.**  The pair looked like the whole cost -- 5.4
+         * million of them for one sentence against a 2.5 second render -- and
+         * removing it changed the render time by nothing at all, because the
+         * loop simply spun faster: 13.1 million iterations instead of 5.4, and
+         * the same 2.46 seconds.  The clock was the cause (see
+         * `sh_gettimeofday`), and this is worth keeping only because a
+         * due-now timer should not cost two syscalls.
+         *
+         * The yield matters more than the saving: the pacer thread is the
+         * engine's clock, and a loop that never yields can starve it. */
+        if (s->armed && s->delay_ms == 0) {
+            s->armed = 0;
+            g_w_src_zero++;
+            if (s->handler) { g_gcd_handler = (void *)s->handler;
+                              source_deliver(s, s->handler, s->ctx, 0); }
+            if (s->period_ms) { s->delay_ms = s->period_ms; s->armed = 1; }
+            if ((s->fired & 0x3f) == 0) SwitchToThread();
+            continue;
+        }
+        ms = s->armed ? s->delay_ms : INFINITE;
+        {   double t0 = tick_ms();
+            r = WaitForSingleObject(s->rearm, ms);
+            if (ms != INFINITE) { g_w_src_n++; g_w_src_ms += tick_ms() - t0;
+                if (r == WAIT_TIMEOUT) g_w_src_fire++; else g_w_src_rearm++; } }
+        if (!s->running) break;
+        if (r != WAIT_TIMEOUT) continue;        /* re-armed; re-read the delay */
+        s->armed = 0;
+        /* This thread is ours, so Windows aligned its stack to four; the
+         * engine's render handler needs sixteen. */
+        if (s->handler) {
+            static void *seen[8]; static int nseen; int k, known = 0;
+            for (k = 0; k < nseen; k++) if (seen[k] == (void *)s->handler) known = 1;
+            if (!known && nseen < 8) { seen[nseen++] = (void *)s->handler;
+                fprintf(stderr, "tiger_host: gcd source %p fired on time, "
+                                "handler %s\n", (void *)s,
+                        engine_symbol((void *)s->handler)); }
+            g_gcd_handler = (void *)s->handler;
+            /* Say so on the way in *and* on the way out.  A handler that fires
+             * seconds after the last utterance and never returns is how the
+             * channel wedges while the host still looks alive, and the two
+             * cases -- ran and returned, versus went in and stayed -- are
+             * indistinguishable from a single line. */
+            if (g_gcd_log)
+                fprintf(stderr, "tiger_host: gcd %p entering %s\n",
+                        (void *)s, engine_symbol((void *)s->handler));
+            source_deliver(s, s->handler, s->ctx, 0);
+            if (g_gcd_log)
+                fprintf(stderr, "tiger_host: gcd %p returned after %u "
+                                "firing(s)\n", (void *)s, s->fired); }
+        if (s->period_ms) {                     /* a real repeating timer */
+            s->delay_ms = s->period_ms;
+            s->armed = 1;
+        }
+    }
+    /* Cancellation is asynchronous: the guest may cancel this source from
+     * its own event handler and continue using its context until it returns.
+     * Snow Leopard's cancellation handler releases the source and deletes
+     * that context. Deliver it here, never from source_cancel. The pool lock
+     * observes cancellation publication; it is not held across guest code.
+     * Cleanup is delivered on the same target queue as the event. */
+    {
+        void (__cdecl *cleanup)(void *) = NULL;
+        void *ctx = NULL;
+        source_pool_lock();
+        if (s->retired && !s->cancel_delivered) {
+            s->cancel_delivered = 1;
+            cleanup = s->cancel_handler;
+            ctx = s->ctx;
+        }
+        source_pool_unlock();
+        if (cleanup) source_deliver(s, cleanup, ctx, 1);
+    }
+    if (g_verbose)
+        printf("  [gcd] source %p ended after %u firing(s)\n",
+               (void *)s, s->fired);
+#ifdef TIGER_UC
+    uc_release_thread();
+#endif
+    return 0;
+}
+
+static void * __cdecl sh_dispatch_source_create(void *type, unsigned long handle,
+                                                unsigned long mask, void *queue)
+{
+    dsource *s = NULL;
+    int i, cap = (int)g_sources_guest_count;
+    int spin;
+    (void)type; (void)handle; (void)mask;
+    /* A retired slot first, and only one whose thread has really finished --
+     * reusing one still inside its handler would hand the engine a source
+     * that is about to be overwritten underneath it.
+     *
+     * **Waiting beats refusing.**  A cancelled source's thread leaves as soon
+     * as it is signalled, but "as soon as" is a scheduler's opinion, and 10.6
+     * cancels and creates in the same breath.  Half a second of patience
+     * costs nothing on a table that is never full in practice, where refusing
+     * costs the whole utterance. */
+    for (spin = 0; spin < 50 && !s; spin++) {
+        dsource *oldest = NULL;
+        int winding = 0;
+        source_pool_lock();
+        for (i = 0; i < g_nsources; i++) {
+            dsource *c = &g_sources[i];
+            if (!c->retired) continue;
+            if (c->starting) { winding = 1; continue; }
+            if (c->thread && WaitForSingleObject(c->thread, 0) != WAIT_OBJECT_0)
+                { winding = 1; continue; }     /* still winding down */
+            if (!oldest || c->retired_at < oldest->retired_at) oldest = c;
+        }
+        if (oldest) {
+            if (oldest->thread) { CloseHandle(oldest->thread);
+                                  oldest->thread = NULL; }
+            if (oldest->rearm)  { CloseHandle(oldest->rearm);
+                                  oldest->rearm = NULL; }
+            s = oldest;
+            g_src_reused++;
+        }
+        if (!s && g_nsources < cap) s = &g_sources[g_nsources++];
+        if (s) {
+            /* Claim and initialize before another creator scans the pool. */
+            g_src_made++;
+            memset(s, 0, sizeof(*s));
+            s->magic = DSRC_MAGIC;
+            s->queue = queue;
+        }
+        source_pool_unlock();
+        if (s) break;
+        /* **Only wait for something that is actually coming.**  Waiting when
+         * nothing is retired is waiting for a slot that will never appear --
+         * half a second per source, on an engine that asks for a lot of them.
+         * That is a slower failure, not a better one. */
+        if (!winding) break;
+        Sleep(10);
+    }
+    if (!s) {
+        /* Out loud.  Silently handing back a handle that is not a source is
+         * how this failed for 10.6 in the first place, and it looks like a
+         * dead engine rather than a full table. */
+        fprintf(stderr, "tiger_host: all %d dispatch sources are in use; this "
+                        "utterance has no worker and will be silent\n", cap);
+        return dispatch_handle();
+    }
+    if (g_verbose) printf("  [gcd] source %p created\n", (void *)s);
+    return s;
+}
+
+static void __cdecl sh_dispatch_set_context(void *o, void *ctx)
+{
+    dsource *s = as_source(o);
+    if (s) s->ctx = ctx;
+}
+
+static void * __cdecl sh_dispatch_get_context(void *o)
+{
+    dsource *s = as_source(o);
+    return s ? s->ctx : NULL;
+}
+
+static void __cdecl sh_dispatch_source_set_cancel_handler_f(
+        void *o, void (__cdecl *fn)(void *))
+{
+    dsource *s = as_source(o);
+    if (s) s->cancel_handler = fn;
+}
+
+/* **The audio graph must not be torn down between utterances.**
+ *
+ * A few seconds after it stops speaking, Lion's engine arms a one-shot timer
+ * on `_MTBEAudioUnitDeferredStopAudioGraph`, which calls `AUGraphStop` and puts
+ * `MTBEAudioUnitSoundOutput` into its stopped state.  On a Mac that is good
+ * manners: it hands the audio device back so the machine can idle.
+ *
+ * Here it wedges the engine.  Once it has fired, the next `SESpeakBuffer` does
+ * not return -- measured, a fresh host speaks fine, sits quiet for five
+ * seconds and then never speaks again.  That is Jerry's report exactly ("if I
+ * don't do anything for a minute or two, then the next thing I do doesn't
+ * talk"), and it is why Lion drops focus announcements where Leopard does not:
+ * 10.5's MacinTalk has no GCD at all and so has no deferred anything.
+ *
+ * The graph it is being polite about does not exist.  There is no device, no
+ * power to save and nothing to hand back -- `tiger_host_audio.c` is a fake
+ * AUGraph that only collects buffers.  So the stop costs us the bug and buys
+ * nothing, and refusing to arm it leaves the engine in the state it is in
+ * while speech is flowing, which is the state every measurement in this
+ * repository was taken in.
+ *
+ * Refused at the source rather than inside `sh_AUGraphStop`, because the
+ * engine sets its own stopped flag straight after that call returns and we
+ * cannot decline that part.  Nothing else stops the graph: `[au] stop` is 0 on
+ * 96 of 96 Lion utterances.
+ *
+ * Named, not addressed -- the load address moves every run.  The lookup is
+ * done once, here, because `set_timer` is called two and a half thousand times
+ * an utterance and `engine_symbol` walks the symbol table. */
+static void __cdecl sh_dispatch_source_set_event_handler_f(
+        void *o, void (__cdecl *fn)(void *))
+{
+    dsource *s = as_source(o);
+    if (s) {
+        s->handler = fn;
+        s->reaps_graph = fn && strstr(engine_symbol((void *)fn),
+                                      "DeferredStopAudioGraph") != NULL;
+        if (s->reaps_graph)
+            fprintf(stderr, "tiger_host: the engine's deferred audio-graph "
+                            "stop is disarmed for the life of this host\n");
+    }
+    if (g_verbose)
+        printf("  [gcd] handler %s on source %p%s\n",
+               engine_symbol((void *)fn), o,
+               s ? "" : "  <- NOT one of ours");
+}
+
+/* `start` is an absolute dispatch_time_t and the other two are nanoseconds; on
+ * i386 each arrives as two words.
+ *
+ * **`start` is the whole point of the call and was being ignored.** Lion arms
+ * this as a one-shot -- "call me back in n milliseconds" -- so a version that
+ * fires immediately and a version that never fires are both wrong in the same
+ * way: the engine's sense of when it may produce the next slice comes from
+ * here.
+ */
+static void __cdecl sh_dispatch_source_set_timer(void *o,
+                                                 unsigned __int64 start,
+                                                 unsigned __int64 interval,
+                                                 unsigned __int64 leeway)
+{
+    dsource *s = as_source(o);
+    unsigned __int64 now;
+    (void)leeway;
+    if (!s) return;
+    /* See `sh_dispatch_source_set_event_handler_f`.  The engine arms and
+     * disarms this one freely; we simply never let it become due.  The delay
+     * it asks for is the engine's own patience with a silent listener, and it
+     * is the number the regression test has to outwait. */
+    if (s->reaps_graph && !g_deferred_stop) {
+        /* Only a real future time is the engine saying "speech is
+         * over"; DISPATCH_TIME_FOREVER here is StartAudioGraph
+         * disarming it as an utterance begins. */
+        now = (unsigned __int64)GetTickCount64() * 1000000ULL;
+        if (start <= (unsigned __int64)3600 * 24 * 1000000000ULL + now)
+            g_defer_arm++;
+        if (g_gcd_log) {
+            unsigned __int64 t = (unsigned __int64)GetTickCount64() * 1000000ULL;
+            fprintf(stderr, "tiger_host: refusing a deferred graph stop "
+                            "%.0f ms out\n",
+                    start > t ? (double)(start - t) / 1e6 : 0.0);
+        }
+        s->armed = 0;
+        return;
+    }
+
+    /* `DISPATCH_TIME_FOREVER` arrives as INT64_MAX, not as ~0ull, and a
+     * threshold set at the unsigned end missed it -- turning "never repeat"
+     * into a 24-day period by way of a truncating divide. The test is about
+     * what is plausible for an utterance rather than about one constant. */
+    if (interval == 0 || interval > 3600ULL * 1000000000ULL)
+        s->period_ms = 0;
+    else {
+        unsigned ms = (unsigned)(interval / 1000000ULL);
+        s->period_ms = ms ? ms : 1;     /* never spin */
+    }
+
+    /* **A deadline arrives on one of two clocks, and which one is the
+     * generation talking.**
+     *
+     * 10.7 builds its start from `dispatch_time`, which this host answers with
+     * `GetTickCount64` -- a monotonic uptime, a few days' worth of
+     * nanoseconds.  **10.6 builds its own from `gettimeofday`**, so its start
+     * is a *wall-clock* nanosecond count: 1.79e18 for 2026 against 3.5e14 for
+     * an uptime.  Read on the wrong clock, 10.6's deadline is 56 years out,
+     * the guard below reads that as `DISPATCH_TIME_FOREVER`, and
+     * `_MTBEWorkerExecuteTask` is never called even once -- which is a
+     * synthesizer that opens a channel, accepts text, answers noErr and
+     * produces a single frame of silence.
+     *
+     * So decide by *proximity to a clock* rather than by magnitude.  The two
+     * are four orders of magnitude apart on any real machine, so nothing can
+     * be near both; and testing proximity rather than size is what keeps
+     * `DISPATCH_TIME_FOREVER` (9.22e18) from being mistaken for a wall-clock
+     * deadline, which a bare threshold would do.
+     *
+     * Order matters.  **The disarm has to be decided first**: a start of
+     * `~0ull` or `INT64_MAX` means "never fire this", and
+     * `MTBEAudioUnitSoundOutput::StartAudioGraph` disarms the deferred stop
+     * exactly that way.  Getting it wrong is a timer going off behind the
+     * engine's back -- it read as "fire this in a minute" once already.
+     *
+     * The wall-clock delay is divided by `g_speed` because the engine read a
+     * clock that runs that much faster than this one: the real wait until our
+     * wall clock reads `start` is the scaled distance over the scale.  Same
+     * arithmetic `sh_uptime` does for 10.5, one step further out. */
+#define DISPATCH_NEAR ((unsigned __int64)3600 * 24 * 1000000000ULL)
+    now = (unsigned __int64)GetTickCount64() * 1000000ULL;
+    {
+        unsigned __int64 wall = wall_us_scaled() * 1000ULL;
+        int near_wall = (start < wall + DISPATCH_NEAR) &&
+                        (start + DISPATCH_NEAR > wall);
+        int near_mono = (start < now + DISPATCH_NEAR);
+        /* Loud on purpose, and loud is the word: 10.7 arms this about
+         * 39,000 times an utterance, so TIGER_GCD_LOG is a diagnostic to
+         * reach for deliberately rather than to leave on. */
+        if (g_gcd_log)
+            fprintf(stderr, "tiger_host: set_timer on %p start=%llu "
+                            "interval=%llu (mono %llu, wall %llu) -> %s\n",
+                    o, start, interval, now, wall,
+                    near_wall ? "wall clock" :
+                    (near_mono ? "monotonic" : "disarm"));
+        if (!near_wall && !near_mono) {
+            s->armed = 0;
+            s->delay_ms = 0;
+            g_w_settimer++;
+            if (g_verbose) printf("  [gcd] timer on %p: disarmed\n", o);
+            return;
+        }
+        if (near_wall) {
+            /* 10.6.  Scaled nanoseconds, so the real wait is that over the
+             * scale -- and a deadline already past fires now, which is the
+             * ordinary case rather than a fault: ten milliseconds of engine
+             * time is under a hundred microseconds of ours. */
+            if (start <= wall) s->delay_ms = 0;
+            else {
+                unsigned __int64 d =
+                    (unsigned __int64)((double)(start - wall) / g_speed)
+                    / 1000000ULL;
+                s->delay_ms = d > 60000ULL ? 60000u : (unsigned)d;
+            }
+        } else if (start == 0 || start <= now)
+            s->delay_ms = 0;
+        else {
+            unsigned __int64 d = (start - now) / 1000000ULL;
+            s->delay_ms = d > 60000ULL ? 60000u : (unsigned)d;  /* a minute is
+                                                                 * already absurd */
+        }
+    }
+    s->armed = 1;
+    g_w_settimer++;
+    if (s->delay_ms == 0) g_w_settimer_now++;
+    if (s->rearm) SetEvent(s->rearm);   /* wake the wait to re-read it */
+    if (g_verbose)
+        printf("  [gcd] timer on %p: fire in %u ms, then every %u ms\n",
+               o, s->delay_ms, s->period_ms);
+}
+
+static void __cdecl sh_dispatch_resume(void *o)
+{
+    dsource *s = as_source(o);
+    HANDLE thread;
+    if (!s) { if (g_verbose) printf("  [gcd] resume(%p) not a source\n", o);
+              return; }
+    source_pool_lock();
+    if (s->running || s->starting) { source_pool_unlock(); return; }
+    /* Auto-reset: each `set_timer` wakes the wait exactly once. */
+    if (!s->rearm) s->rearm = CreateEvent(NULL, FALSE, FALSE, NULL);
+    s->running = 1;
+    s->starting = 1;
+    source_pool_unlock();
+    /* The event can cancel itself before CreateThread returns. Prevent pool
+     * reuse until the resulting thread handle has been published. */
+    thread = CreateThread(NULL, 0, source_thread, s, 0, NULL);
+    if (!thread) die("cannot create dispatch timer thread");
+    source_pool_lock();
+    s->thread = thread;
+    s->starting = 0;
+    source_pool_unlock();
+    if (g_verbose)
+        printf("  [gcd] resumed %p (handler %p, armed=%ld, %u ms)\n", o,
+               (void *)s->handler, s->armed, s->delay_ms);
+}
+
+static void __cdecl sh_dispatch_suspend(void *o)
+{
+    dsource *s = as_source(o);
+    if (s) s->running = 0;
+}
+
+static void __cdecl sh_dispatch_source_cancel(void *o)
+{
+    dsource *s = as_source(o);
+    if (!s) return;
+    source_pool_lock();
+    s->running = 0;
+    s->armed = 0;
+    /* Wake it so it can leave rather than sitting out its delay: the slot is
+     * only reusable once the thread has gone, and 10.6 wants it back within
+     * the same utterance. */
+    if (s->rearm) SetEvent(s->rearm);
+    s->retired_at = ++g_retire_seq;
+    s->retired = 1;
+    source_pool_unlock();
+}
+
+/* Nanoseconds since the process started, which is all either of these is used
+ * for here -- the engine only ever adds a delta and hands the result back. */
+static unsigned __int64 __cdecl sh_dispatch_time(unsigned __int64 when,
+                                                 __int64 delta)
+{
+    (void)when;
+    return (unsigned __int64)GetTickCount64() * 1000000ULL + delta;
+}
+
+static unsigned __int64 __cdecl sh_dispatch_walltime(void *when, __int64 delta)
+{
+    /* **A walltime is on the wall clock, and the name is not decoration.**
+     * Returning an uptime here made 10.6 compute a deadline four days out --
+     * see `sh_dispatch_source_set_timer`.  `when` is a `struct timespec`, or
+     * NULL for "now"; the scaled clock is the one the engine reads for itself
+     * with `gettimeofday`, so it has to be the one it gets back here too. */
+    unsigned __int64 base;
+    if (when) {
+        const unsigned *ts = (const unsigned *)when;   /* i386: sec, nsec */
+        base = (unsigned __int64)ts[0] * 1000000000ULL + ts[1];
+    } else {
+        base = wall_us_scaled() * 1000ULL;
+    }
+    if (g_gcd_log)
+        fprintf(stderr, "tiger_host: dispatch_walltime(when=%p, delta=%lld) "
+                        "-> %llu\n", when, delta, base + delta);
+    return base + delta;
+}
+
+static void * __cdecl sh_dispatch_queue_create(const char *label, void *attr)
+{
+    void *q = dispatch_handle();
+    (void)label;
+    if (!attr) source_queue_init(q);
+    return q;
+}
+
+static void * __cdecl sh_dispatch_get_global_queue(long pri, unsigned long f)
+{ (void)pri; (void)f; return dispatch_handle(); }
+
+static void __cdecl sh_dispatch_release(void *o) { (void)o; }
+static void __cdecl sh_dispatch_retain(void *o)  { (void)o; }
+
+/* `OSAtomicAdd32Barrier` is a real atomic and has to stay one: the engine uses
+ * it to hand buffers between its own threads. */
+static int __cdecl sh_OSAtomicAdd32Barrier(int amount, volatile long *value)
+{
+    return (int)InterlockedExchangeAdd(value, amount) + amount;
+}
+
+static int __cdecl sh_OSAtomicAdd32(int amount, volatile long *value)
+{
+    return (int)InterlockedExchangeAdd(value, amount) + amount;
+}

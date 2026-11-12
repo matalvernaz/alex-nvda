@@ -1,0 +1,2 @@
+// Embed the host's Unicode-path manifest without requiring an external runtime file.
+1 24 "alex_host.manifest"

@@ -1,0 +1,964 @@
+/* tiger_host_serve.c -- serve mode: the protocol the driver speaks.
+ *
+ * Part of tiger_host.c, which includes it; see there for why this is one
+ * translation unit. */
+
+/* ---- serve mode -------------------------------------------------------- */
+/*
+ * One long-lived engine behind the NVDA driver.  Opening a channel costs a
+ * 2.1 MB dictionary map and a voice load, so it happens once; after that a
+ * request is text in, PCM out, over `g_in` and `g_out`.
+ *
+ * **Those two are the only reason anything in this file knows it is a
+ * process.**  The executable points them at its own stdin and stdout; the DLL
+ * points them at a pair of private pipes it made itself, because inside NVDA's
+ * 32-bit bridge host the process's stdin and stdout already belong to RPyC and
+ * would not survive being shared.  Everything below is written once and runs
+ * unchanged either way, which is the whole reason a DLL could be added without
+ * a second protocol to keep in step with this one.
+ *
+ * The voice is named rather than numbered, and the host reads the creator
+ * OSType and id straight out of the bundle's VoiceDescription -- so nothing
+ * here carries a table that could disagree with the files on disk.
+ *
+ *   request   'TGR3' | i32 wpm | i32 pitch | u32 flags | u32 namelen
+ *                      | u32 textlen | name | text
+ * Flags: bit 1 (2) repairs numbers; bit 2 (4) spells numbers as words.
+ * With neither bit set, legacy client-prepared text is preserved. Bit 0 is reserved.
+ * Number style is per request, so changing it never restarts the host.
+ *   response  'TGRS' | i32 status | u32 nframes | i16 pcm[nframes]
+ *
+ * `pitch` is an **offset in tenths of a semitone** from the voice's own pitch,
+ * not an absolute value.  Every voice has its own natural pitch -- Fred sits
+ * near 127 Hz and Bruce near 135 -- so an absolute scale would mean the middle
+ * of the slider sounded different for each one.  The host asks the engine for
+ * the voice's default with 'pbas' and applies the offset to that, which keeps
+ * the knowledge of the scale where the query lives.
+ *
+ * The scale is semitones: measured, 'pbas' 40 -> 109 Hz and 50 -> 193 Hz, a
+ * ratio of 1.77 over ten units, so ten units is very close to an octave.
+ *
+ * The magic changed with the field: a stale host in the add-on folder should
+ * fail loudly rather than misread a request by one word and speak nonsense.
+ */
+/* The request and response channels.  Left null until `serve` starts, because
+ * `stdin` and `stdout` are function calls in the UCRT and cannot initialise a
+ * static; the DLL sets them before calling and `serve` fills in the
+ * executable's answer when it finds them empty. */
+static FILE *g_in, *g_out;
+
+#define REQ_MAGIC 0x54475233u           /* 'TGR3' */
+/* 'TGR4' asks for the same audio, streamed.  A separate magic rather than a
+ * flag because the failure it guards against is a stale tiger_host.exe left in
+ * an add-on folder: a host that cannot stream must refuse the request outright
+ * rather than answer it in a shape the driver will misread.  That is why the
+ * request magic carries a version at all. */
+#define REQ_MAGIC_STREAM 0x54475234u    /* 'TGR4' */
+#define REQ_MAGIC_MARKERS 0x54475235u   /* 'TGR5': PCM + positioned syncs */
+#define STREAM_MARKER 0x80000001u      /* followed by u32 id, u32 frame */
+#define STREAM_ERROR  0x80000002u      /* followed by i32 error; then end */
+#define MARKERS_UNAVAILABLE (-32001)
+#define RSP_MAGIC 0x54475253u           /* 'TGRS' */
+/* How far behind the collected frontier a streamed chunk stops.
+ *
+ * Measured rather than chosen: across Alex, Fred and Vicki, at 120, 180 and
+ * 300 wpm, on text long enough to span many epochs, slices land behind the
+ * frontier 19 to 53 times per utterance and never by more than *one* frame --
+ * the single-frame probe that opens each epoch, covered again immediately by
+ * the 229-frame slice at the same position.  Sent audio cannot be unsent, so
+ * hold back a margin far larger than anything observed; 512 frames is 23 ms,
+ * which no listener notices and no measurement came close to.
+ *
+ * **The size was never the problem.  Being last was.**  The margin is released
+ * when the response ends, and on 10.7 that is 300 ms after the audio is
+ * finished, because 10.7 never stops its audio graph and the quiet period is
+ * the only thing that ends an utterance.  At ordinary rates it is a fraction
+ * of a long utterance and nothing notices.  With rate boost the whole
+ * utterance is smaller than the margin's own delay:
+ *
+ *     lion  640 wpm, letter "O"   77 ms of audio, then the player has
+ *                                 nothing for 247 ms, then the last 23 ms
+ *     lion 1200 wpm, letter "O"   33 ms, nothing for 293 ms, then 23 ms
+ *
+ * The output stream drains, and what the listener hears is the speech, a gap,
+ * and then a tail fading in -- reported by Tomi at rate 50 with rate boost,
+ * who described it as sounding like an old synthesizer closing its wave
+ * socket.  That is exactly what it is: the player underrunning and being
+ * started again for a fragment.  Leopard never does it, because AUGraphStop
+ * ends its response about 11 ms after the audio and the tail arrives while
+ * 77 ms is still buffered.
+ *
+ * So the margin is now released on `STREAM_SETTLE` rather than at the end. */
+#define STREAM_LOOKBEHIND 512u
+
+/* Ticks of 10 ms with no new slice, after which the held-back margin goes out
+ * rather than waiting for the response to end.
+ *
+ * **30 ms, and it is deliberately shorter than the 40.2 ms widest gap between
+ * two slices of one utterance.**  60 ms was tried first, on the reasoning that
+ * the flush should never fire while an utterance is still being produced.  It
+ * left the fault in place at the rates that have it: the whole utterance is
+ * shorter than the wait, so the player still ran dry -- 22 ms at 640 wpm and
+ * 40 ms at 1200.  At 30 ms every rate measured on both generations comes back
+ * at 11 ms, which is the first-chunk latency and not a hole at all.
+ *
+ * Flushing early is close to free.  A slice arriving afterwards only matters
+ * if it lands *behind* the frontier, and the worst ever measured is **one
+ * frame** -- the single-frame probe that opens an epoch, which the next slice
+ * covers at the same position anyway.  So the listener would hear 45
+ * microseconds of the probe instead of the sample, against a quarter-second
+ * hole.  Slices that land ahead simply append, which is what a long token's
+ * silences do.
+ *
+ * The margin is still worth having while slices are arriving quickly: it costs
+ * nothing then, because more audio is on its way.  This releases it at exactly
+ * the moment it stops being free. */
+#define STREAM_SETTLE 3u
+
+/* Abandoning an utterance the listener has interrupted.
+ *
+ * Measured on Tomi's machine: 38% of utterances waited more than 200 ms before
+ * they even began rendering, the worst 931 ms, because the worker was still
+ * reading out the *previous* response.  Cancelling stops the sound instantly,
+ * but the engine carried on synthesising all seven seconds of audio nobody
+ * would ever hear, and the next thing the user asked for queued behind it.
+ * Streaming made the first sound arrive in 20 ms and this hid the win.
+ *
+ * A Windows event rather than anything on the pipe: the driver's cancel()
+ * runs on NVDA's main thread -- the one that turns keystrokes into speech --
+ * so it must never block, and SetEvent cannot.  The name comes in on the
+ * environment when the host is started. */
+static HANDLE g_cancel_ev;
+#ifndef _WIN32
+#include <signal.h>
+static volatile sig_atomic_t g_cancel_signal;
+/* Only publish a flag from the signal handler. Engine calls belong to the
+ * synthesis thread. Lock-free exchange keeps a new signal from being lost
+ * while the reader consumes an earlier one. */
+#if __GCC_ATOMIC_INT_LOCK_FREE != 2
+#error Cancellation requires lock-free integer atomics
+#endif
+typedef char cancel_atomic_is_int[sizeof(sig_atomic_t) == sizeof(int) ? 1 : -1];
+static void cancel_signal(int sig)
+{
+    (void)sig;
+    __atomic_store_n(&g_cancel_signal, 1, __ATOMIC_RELAXED);
+}
+#endif
+/* Whether an interrupted channel is reset with soReset.
+ *
+ * It flushes what is left, but it resets the channel to its defaults --
+ * and for Alex that means the voice, whose sample bank is 701 MB.  The
+ * driver's own test caught it: interrupting cost 2887 ms afterwards.
+ * TIGER_RESET=1 puts it back for measuring; the settle below is what
+ * carries the load. */
+static int g_use_reset;
+#define SEL_STATUS 0x73746174u          /* 'stat' -- soStatus */
+
+/* SpeechStatusInfo starts with byte-sized outputBusy/inputBusy flags. The
+ * engine writes through this pointer, so use guest-visible storage on UC. */
+static int speech_status_idle(const speech_api *api, void *chan, int *idle)
+{
+    unsigned char info[16] = {0};
+    unsigned char *slot;
+    int rc;
+    if (!api->getinfo) return -231;
+    slot = (unsigned char *)UC_IN(info, sizeof info);
+    if (!slot) return -108;
+    rc = call_aligned3((void *)api->getinfo, chan, (void *)SEL_STATUS, slot);
+    *idle = rc == 0 && slot[0] == 0;
+    UC_FREE(slot);
+    return rc;
+}
+
+static int cancel_requested(void)
+{
+#ifndef _WIN32
+    if (__atomic_exchange_n(&g_cancel_signal, 0, __ATOMIC_RELAXED)) return 1;
+#endif
+    return g_cancel_ev &&
+           WaitForSingleObject(g_cancel_ev, 0) == WAIT_OBJECT_0;
+}
+
+/* StopSpeechAt with kImmediate: give up on this utterance now.  The engine
+ * stops producing, the wait loop below falls out, and the response ends -- so
+ * the pipe stays in step and the driver is free for the next utterance. */
+typedef int (*SEStop_t)(void *chan, unsigned where);
+
+/* SpeechStatus: the first long of the struct is outputBusy.
+ *
+ * Needed because stopping is not the same as having stopped.  Proved with
+ * Whisper: interrupt a sentence, ask for the next one, and the engine speaks
+ * the *remainder of the abandoned text first* --
+ *
+ *   "or the one after that, or the one after that, what I read is that the
+ *    infrared cameras are intended to capture detail."
+ *
+ * -- which is the fragment of the post above arriving at the head of the post
+ * below, exactly as reported.  SEStopSpeechAt(kImmediate) returns before the
+ * channel is idle, and text handed to a still-busy channel queues behind what
+ * is already in it.  So wait for it. */
+typedef int (*SEStatus_t)(void *chan, void *info);
+#define SEL_RATE  0x72617465u           /* 'rate' -- soRate, Fixed wpm */
+#define SEL_PITCH 0x70626173u           /* 'pbas' -- soPitchBase, Fixed */
+#define SEL_DELIM 0x646c696du           /* 'dlim' -- soCommandDelimiter */
+#define SEL_RESET 0x72736574u           /* 'rset' -- soReset */
+
+/* Flags word in the request. */
+#define REQF_COMMANDS 0x1               /* honour [[...]] in the text */
+
+typedef int (__cdecl *SEUseVoice_t)(void *, const void *, const void *);
+typedef int (__cdecl *SESpeak_t)(void *, const void *, long, long);
+typedef int (__cdecl *SESetInfo_t)(void *, unsigned, const void *);
+typedef int (__cdecl *SEGetInfo_t)(void *, unsigned, void *);
+
+static int read_all(FILE *f, void *buf, size_t n)
+{
+    return n == 0 || fread(buf, 1, n, f) == n;
+}
+
+/* creator and id live at +4 and +8 of a VoiceDescription, big-endian. */
+static int voice_spec(const char *dir, unsigned *creator, int *id)
+{
+    char path[CFPATH];
+    unsigned char h[12];
+    FILE *f;
+    _snprintf(path, sizeof(path), "%s/Contents/Resources/VoiceDescription", dir);
+    path[sizeof(path) - 1] = 0;
+    f = fopen(path, "rb");
+    if (!f) return 0;
+    if (fread(h, 1, sizeof(h), f) != sizeof(h)) { fclose(f); return 0; }
+    fclose(f);
+    *creator = ((unsigned)h[4] << 24) | (h[5] << 16) | (h[6] << 8) | h[7];
+    *id      = ((int)h[8] << 24) | (h[9] << 16) | (h[10] << 8) | h[11];
+    return 1;
+}
+
+/* Break a long unbroken run of one letter, because the morphology cannot
+ * survive one.
+ *
+ * `SLPrefixMorph::AddAffix` keeps a saved word's length in a signed byte and
+ * adds each affix to it unchecked (the disassembly is quoted in
+ * tiger_host_shims.c).  A run of the same letter is what makes that overflow
+ * reachable: every position in the run offers the morphology the same prefix
+ * match, so the decompositions multiply, the byte climbs past 127 and reads
+ * back negative.  Twenty x's followed by "the" is enough -- issue #4 -- and it
+ * fails two different ways depending on how far it gets: a memmove of four
+ * gigabytes, or a quieter overrun of one record into the next that surfaces
+ * later as a null dereference in the synthesis path.
+ *
+ * A run this long is not a word in any language.  The longest genuine repeat
+ * in English is two letters, three in a compound, and words that *are* long --
+ * `antidisestablishmentarianism`, `supercalifragilisticexpialidocious` -- do
+ * not trigger it, because they are not repetitive.  So ten is far above
+ * anything real and far below the threshold: measured, Alex survives twelve
+ * and dies at sixteen.
+ *
+ * A space rather than a truncation, deliberately: every character the user has
+ * on screen is still spoken, in the same order.  The engine sees two shorter
+ * tokens instead of one impossible one, which is the whole of the fix.
+ */
+#define MAX_LETTER_RUN 10
+
+static int is_letter(unsigned char c)
+{
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+}
+
+static char *break_letter_runs(char *text, unsigned *len)
+{
+    unsigned n = *len, i, j = 0, run = 0;
+    char *out;
+    if (!text || !n) return text;
+    out = (char *)malloc(n + n / MAX_LETTER_RUN + 2);
+    if (!out) return text;                  /* the crash is better than none */
+    for (i = 0; i < n; i++) {
+        if (i && text[i] == text[i - 1] && is_letter((unsigned char)text[i]))
+            run++;
+        else
+            run = 0;
+        if (run >= MAX_LETTER_RUN) { out[j++] = ' '; run = 0; }
+        out[j++] = text[i];
+    }
+    out[j] = 0;
+    if (j != n)
+        fprintf(stderr, "tiger_host: broke %u long letter run(s) in this "
+                        "utterance -- the dictionary's morphology overflows on "
+                        "them (issue #4); every character is still spoken\n",
+                j - n);
+    free(text);
+    *len = j;
+    return out;
+}
+
+/* 32-bit float to 16-bit PCM, the one place the conversion is written.
+ *
+ * Streamed and blocking responses have to produce identical bytes -- that is
+ * the invariant the streaming test rests on -- so they cannot each carry their
+ * own copy of this loop. */
+static void put_frames(unsigned from, unsigned to)
+{
+    unsigned i;
+    for (i = from; i < to; i++) {
+        double v = g_pcm[i];
+        short s;
+        if (v > 1.0) v = 1.0;
+        if (v < -1.0) v = -1.0;
+        s = (short)(v * 32767.0);
+        fwrite(&s, 2, 1, g_out);
+    }
+}
+
+/* Send frames [sent, upto) as one chunk and return the new frontier.  A chunk
+ * is a frame count followed by that many samples; a count of zero ends the
+ * response, so a chunk is never written empty. */
+static unsigned stream_chunk(unsigned sent, unsigned upto)
+{
+    /* Keep each protocol chunk short enough that an in-process consumer can
+     * observe its cancellation flag promptly.  SAPI checks between chunks;
+     * without this cap Alex can hand it seconds of audio in one block and the
+     * Stop button cannot be acted on until that whole block has crossed the
+     * pipe.  1024 frames is about 46 ms at 22050 Hz. */
+    while (sent < upto) {
+        unsigned n = upto - sent;
+        if (n > 1024u) n = 1024u;
+        fwrite(&n, 4, 1, g_out);
+        put_frames(sent, sent + n);
+        fflush(g_out);
+        sent += n;
+    }
+    return sent;
+}
+
+static int stream_markers(unsigned *sent, unsigned settled)
+{
+    for (;;) {
+        speech_marker mark;
+        unsigned upto;
+        int have, failed;
+        /* Publish only the committed producer frontier. A sync can arrive
+         * immediately after this snapshot at THAT frontier, but cannot then
+         * arrive behind audio already sent. Do not hold the lock on pipe I/O
+         * or guest calls: both can block the producer. */
+        EnterCriticalSection(&g_markers.lock);
+        upto = g_markers.frontier;
+        if (upto > settled) upto = settled;
+        failed = g_markers.failed;
+        have = g_markers.consumed < g_markers.count &&
+               g_markers.items[g_markers.consumed].frame <= upto;
+        if (have) mark = g_markers.items[g_markers.consumed++];
+        LeaveCriticalSection(&g_markers.lock);
+        if (failed) return 0;
+        if (!have) {
+            *sent = stream_chunk(*sent, upto);
+            return 1;
+        }
+        if (mark.frame < *sent) return 0;
+        *sent = stream_chunk(*sent, mark.frame);
+        {
+            unsigned tag = STREAM_MARKER;
+            fwrite(&tag, 4, 1, g_out);
+            fwrite(&mark.id, 4, 1, g_out);
+            fwrite(&mark.frame, 4, 1, g_out);
+            fflush(g_out);
+        }
+    }
+}
+
+static int serve(image *mt, void *chan, const char *voicesdir)
+{
+    SEUseVoice_t use     = (SEUseVoice_t)find_export(mt, "_SEUseVoice");
+    /* **The shared layer, not a second copy of it.**  This function used to
+     * resolve `_SESpeakBuffer` and `_SESetSpeechInfo` for itself -- which is
+     * exactly the drift tiger_host_speech.c warns about at the top, and it
+     * cost both halves of Lion's serve mode: 10.7 exports no `SESpeakBuffer`
+     * at all, so the text call jumped to address zero, and its
+     * `SESetSpeechInfo` answers -231 to `rate`, so every utterance would have
+     * come out at the engine's own 180 wpm. The one-shot render has used this
+     * layer since Lion's text path was written; serve mode had not. */
+    speech_api   api     = speech_api_of(mt);
+    SESetInfo_t  setinfo = (SESetInfo_t)find_export(mt, "_SESetSpeechInfo");
+    SEStop_t     stopnow = (SEStop_t)find_export(mt, "_SEStopSpeechAt");
+    SEStatus_t   status  = (SEStatus_t)find_export(mt, "_SESpeechStatus");
+    {
+        const char *evname = getenv("TIGER_CANCEL_EVENT");
+        if (evname && *evname) {
+            g_cancel_ev = OpenEventA(SYNCHRONIZE, FALSE, evname);
+            if (!g_cancel_ev)
+                fprintf(stderr, "tiger_host: cannot open the cancel event, so "
+                                "an interrupted utterance will be rendered to "
+                                "the end\n");
+        }
+    }
+    unsigned basepitch = 0;              /* the current voice's own pitch */
+    char curvoice[128] = "";
+    int  currate = -1;
+    int  curpitch = -1;
+
+    g_verbose = 0;                       /* the pipe carries audio, not chat */
+    if (!g_in)  g_in  = stdin;           /* the executable's channels */
+    if (!g_out) g_out = stdout;
+    _setmode(_fileno(g_in), _O_BINARY);
+    _setmode(_fileno(g_out), _O_BINARY);
+
+    /* **The protocol keeps the pipe; stdout stops being it.**
+     *
+     * Anything in the host that printf's while serving writes into the
+     * response stream, and the client reads whatever lands there as frame
+     * counts.  Most prints are behind g_verbose, but a handful of anomaly
+     * complaints were not -- a shim's first-call notice, a slice-size
+     * mismatch -- and one firing mid-utterance corrupted the stream: the
+     * SAPI DLL misread "  [s" as 1.9 billion frames, asked for that many
+     * bytes, and took the whole client application down with it.  Found
+     * from a game that crashed, rarely, after hours of route calls.
+     *
+     * So the protocol moves to a private duplicate of the pipe, and stdout
+     * is rebound to stderr -- which serve mode already points somewhere
+     * harmless -- so a stray print can never again reach the stream.  A
+     * client whose stderr is nothing at all (a GUI application's often is)
+     * gets NUL instead.  The complaints themselves now say stderr, where
+     * complaints belong; this is armor for the next one. */
+    if (g_out == stdout) {
+        int fd = _dup(_fileno(stdout));
+        if (fd != -1) {
+            FILE *pipe = _fdopen(fd, "wb");
+            if (pipe) {
+                _setmode(fd, _O_BINARY);
+                g_out = pipe;
+                fflush(stdout);
+                if (_get_osfhandle(_fileno(stderr)) == -1 ||
+                    _dup2(_fileno(stderr), _fileno(stdout)) != 0)
+                    freopen("NUL", "wb", stdout);
+            }
+        }
+    }
+
+#ifndef _WIN32
+    {
+        struct sigaction action;
+        memset(&action, 0, sizeof(action));
+        action.sa_handler = cancel_signal;
+        sigemptyset(&action.sa_mask);
+        action.sa_flags = SA_RESTART;
+        if (sigaction(SIGUSR1, &action, NULL) != 0) {
+            perror("tiger_host: installing cancellation signal");
+            return 1;
+        }
+    }
+#endif
+    /* A client can wait for TRDY before writing the first request.
+     * Opt-in preserves the byte stream expected by existing NVDA clients. */
+    { const char *ready = getenv("TIGER_READY_HANDSHAKE");
+      if (ready && !strcmp(ready, "1")) {
+          unsigned magic = 0x59445254u;
+          if (fwrite(&magic, 4, 1, g_out) != 1 || fflush(g_out)) return 1;
+      } }
+
+    for (;;) {
+        unsigned magic, namelen, textlen, nframes, i;
+        int wpm, pitch, err = 0, voicechanged;
+        unsigned flags;
+        int streaming, marked, marker_failed = 0;
+        int cancelled = 0;
+        unsigned sent = 0;
+        double speak_ms = 0.0;
+        char name[128];
+        char *text;
+
+        timer_res_busy(0);              /* waiting: the pacer may let go */
+        if (!read_all(g_in, &magic, 4)) return 0;      /* driver went away */
+        timer_res_busy(1);
+        if (magic != REQ_MAGIC && magic != REQ_MAGIC_STREAM &&
+            magic != REQ_MAGIC_MARKERS) return 1;
+        marked = (magic == REQ_MAGIC_MARKERS);
+        streaming = (magic != REQ_MAGIC);
+        if (!read_all(g_in, &wpm, 4) ||
+            !read_all(g_in, &pitch, 4) ||
+            !read_all(g_in, &flags, 4) ||
+            !read_all(g_in, &namelen, 4) ||
+            !read_all(g_in, &textlen, 4)) return 1;
+        if (namelen >= sizeof(name)) return 1;
+        if (!read_all(g_in, name, namelen)) return 1;
+        name[namelen] = 0;
+        text = (char *)malloc(textlen + 1);
+        if (!text || !read_all(g_in, text, textlen)) { free(text); return 1; }
+        text[textlen] = 0;
+        if(flags & 6u){
+            char *expanded = num_expand(text, (flags & 4u) ? NUM_STYLE_WORDS : NUM_STYLE_FIX);
+            free(text);
+            if(!expanded)return 1;
+            text=expanded;
+            textlen=(unsigned)strlen(text);
+        }
+        text = break_letter_runs(text, &textlen);
+
+        voicechanged = 0;
+        if (strcmp(name, curvoice) != 0) {
+            char dir[CFPATH];
+            struct { unsigned creator; int id; } spec;
+            _snprintf(dir, sizeof(dir), "%s/%s.SpeechVoice", voicesdir, name);
+            dir[sizeof(dir) - 1] = 0;
+            if (voice_spec(dir, &spec.creator, &spec.id)) {
+                err = call_aligned3((void *)use, chan, UC_IN(&spec, sizeof spec),
+                                    cf_pinned(dir));
+                if (!err) {
+                    strcpy(curvoice, name);
+                    voicechanged = 1;
+                    /* Ask the voice what it sounds like before changing it. */
+                    basepitch = 0;
+                    if (!get_param(&api, chan, PARAM_PITCH, &basepitch))
+                        basepitch = 0;
+                    if (g_verbose)
+                        printf("  [pitch] %s base %.2f\n", name,
+                               basepitch / 65536.0);
+                }
+            } else err = -244;                          /* voiceNotFound */
+        }
+        /* Rate and pitch are re-applied on EVERY utterance, not only when
+         * they change.  Text may contain embedded commands -- "[[rate 100]]"
+         * works, and measurably -- and those change the channel for good.  A
+         * stray command in a web page would otherwise slow every later
+         * utterance until the user happened to move a slider.  Two cheap
+         * setter calls buy immunity from that. */
+        if (!err && wpm > 0) {
+            unsigned fixed = (unsigned)wpm << 16;       /* Fixed 16.16 wpm */
+            int rc = set_param(&api, chan, PARAM_RATE, fixed);
+            if (rc == 0) currate = wpm;
+            else
+                /* Worth saying out loud.  A rate that fails to apply is not a
+                 * subtle fault: the engine falls back to its own 180 wpm, and
+                 * someone reading at 400 hears the whole post crawl.  That was
+                 * reported as lag, and looked like one. */
+                fprintf(stderr, "tiger_host: the engine refused %d wpm "
+                                "(OSErr %d), so this utterance is at its own "
+                                "default rate\n", wpm, rc);
+        }
+        /* Pitch is re-applied whenever it changes *or* the voice changed: a
+         * new voice arrives with its own pitch and would otherwise keep it
+         * until the user happened to move the slider. */
+        if (!err && basepitch) {
+            /* offset is tenths of a semitone, and the scale is semitones */
+            unsigned fx = (unsigned)((int)basepitch + (pitch * 65536) / 10);
+            if (set_param(&api, chan, PARAM_PITCH, fx) == 0) curpitch = pitch;
+        }
+
+        /* Embedded commands -- "[[rate 100]]", "[[volm 0.5]]", even
+         * "[[inpt TUNE]]" for singing -- are a real feature of this front end,
+         * all measured working.  Whether to honour them is the driver's
+         * decision, and it enforces it by removing them from the text: the
+         * `soCommandDelimiter` selector looked like the tidier lever, but
+         * zeroing the delimiters made text containing "[[" produce silence
+         * rather than speaking it literally, and an unlikely delimiter
+         * character did the same.  Stripping in the driver is deterministic
+         * and testable, which this was not.
+         *
+         * What the host does guarantee is that a command cannot outlive its
+         * utterance: rate and pitch are re-applied above, every time.
+         */
+
+
+        g_defer_arm = 0;
+        g_src_made = g_src_reused = 0;
+        g_t_aac = g_t_fft = 0;
+        g_n_aac = g_n_fft = 0;
+        g_pcm_n = 0; g_slices = 0; g_stopped = 0; g_empty_run = 0;
+        InterlockedExchange(&g_au_cancel, 0);
+        g_dup_slices = 0; g_have_last = 0; g_p_drops = 0;
+        timeline_reset();
+        /* A new utterance: anything still in flight for the last one is stale
+         * from here on, and the pacer will complete those slices without
+         * collecting them. */
+        g_utt++; g_stale_slices = 0;
+        /* Consume any cancel left over from before this request.
+         *
+         * The driver clears the event before it writes a request, but it
+         * cannot close the gap: arrowing quickly through a timeline sends
+         * cancels faster than requests, and one landing between that clear
+         * and this loop aborted an utterance nobody had cancelled.  The user
+         * hears nothing at all for it -- which is how a fix for the lag came
+         * to *be* the lag.
+         *
+         * A cancel that arrives from here on is genuinely for this utterance,
+         * because this is where it starts. */
+        (void)cancel_requested();
+        g_sc.sessions = 0; g_sc.resets = 0; g_sc.lost = 0; g_pkts_fed = 0;
+        g_sql_rows = 0;
+        g_back_slices = 0; g_back_max = 0;
+        g_utt_t0 = wall_ms(); g_first_slice_ms = -1.0; g_last_slice_ms = 0.0;
+        g_slice_gap_max = 0.0; g_slice_prev_ms = 0.0;
+        g_stat_ok = g_stat_refused = g_stat_idle = 0;
+        /* SESpeakBuffer's fourth argument is the Speech Manager's own flags
+         * word, and kNoEndingProsody (1) looked like the lever for a screen
+         * reader: NVDA speaks in fragments, and each one gets the falling
+         * pitch that ends a sentence whether or not one ended.  Measured, it
+         * changes nothing at all -- byte-identical on a fragment and on a
+         * paragraph -- and this request's own flags word already means
+         * REQF_COMMANDS, so forwarding it would have made "accept embedded
+         * commands" quietly mean kNoEndingProsody as well.  Zero it stays. */
+        if (g_gcd_log)
+            fprintf(stderr, "tiger_host: [%u] speaking %u byte(s)\n",
+                    g_utt, textlen);
+        if (!err && marked && !markers_begin(mt, textlen)) err = MARKERS_UNAVAILABLE;
+        if (!err) err = speak_text(&api, chan, text, textlen);
+        speak_ms = wall_ms() - g_utt_t0;
+        if (g_gcd_log)
+            fprintf(stderr, "tiger_host: [%u] speak returned %d at %.1f ms\n",
+                    g_utt, err, speak_ms);
+        free(text);
+
+        /* A streamed response says how it went before it says anything else.
+         *
+         * SESpeakBuffer returns in about a tenth of a millisecond and the
+         * first slice arrives a millisecond after that, so `err` is known long
+         * before the audio is, and the driver can start listening for chunks
+         * immediately instead of waiting out the render. */
+        if (streaming) {
+            magic = RSP_MAGIC;
+            fwrite(&magic, 4, 1, g_out);
+            fwrite(&err, 4, 1, g_out);
+            fflush(g_out);
+        }
+
+        /* AUGraphStop is the engine's own end-of-utterance signal, with a
+         * quiet-period fallback in case an utterance ends another way.
+         *
+         * **On 10.7 the fallback is not a fallback, it is the only path.**
+         * Tiger and Leopard start and stop the graph once per utterance --
+         * measured, 92 of 92 and 96 of 96 -- and leave here the moment the
+         * engine stops it.  Lion starts the graph once for the whole session
+         * and never stops it at all, 0 of 96, so every Lion utterance sits out
+         * the entire quiet period after its audio is already complete.  That
+         * is a fixed 300 ms on the end of every Lion render, and it is why
+         * Lion measures 16x real time where Leopard measures 87x.
+         *
+         * **Shortening it was tried, and reverted.**  The widest silence
+         * between two slices of one utterance, over 284 utterances across all
+         * three generations and every voice, was 40.2 ms -- so 150 ms looked
+         * like three and a half times the worst case, and Tiger's and
+         * Leopard's renders came back byte-identical with it.
+         *
+         * They were the wrong 284 utterances.  Every one was an ordinary
+         * sentence, and the gap that matters does not live in ordinary
+         * sentences: an unbroken token of 370 characters gives Alex enough
+         * morphology to go quiet for longer than 150 ms in the middle of one
+         * utterance, and at 150 the four cases in
+         * `tests/leopard/test_long_tokens.py` fail.  Those are Brandon's
+         * issue #4, and they are in the suite precisely because nobody knows
+         * which change cured it.
+         *
+         * So the number stays where a reported bug says it has to be, and
+         * Lion pays 300 ms it should not have to.
+         *
+         * **And asking instead of inferring does not work on Lion -- measured,
+         * not assumed.**  `TIGER_STATUS=1` puts the Speech Manager's own
+         * `stat` selector in the wait loop, whose first long is `outputBusy`.
+         * Tiger answers it and says idle; Leopard answers it; **Lion refuses
+         * it, 32 times out of 32**.  10.7 moved rate and pitch to
+         * `SESetSpeechProperty` and it evidently moved status the same way, to
+         * `SECopySpeechProperty` with a CFString key and a CFDictionary back
+         * -- which this host cannot read yet, because
+         * `sh_CFDictionaryGetValue` is a stub returning NULL.
+         *
+         * That is the shape of the real fix, and it is worth more than the
+         * 300 ms: while the wait runs, the driver still counts the utterance
+         * as rendering, so a cancel from the next keystroke retires the whole
+         * host.  Reported by Timothy Wynn as hearing "the executable runs
+         * again" when arrowing quickly by letter. */
+        if (!err) {
+            unsigned last = 0, quiet = 0, ticks = 0;
+            /* Lion signals completion by arming its deferred stop. Its one-frame startup kick is not speech; a cold Alex bank can still be selecting units after 300 ms. */
+            while (!g_stopped && (api.cfstring ? !g_defer_arm : quiet < 30) && ticks < 900) {
+                Sleep(10); ticks++;
+                /* **10.7 does signal the end of an utterance, and this is
+                 * it.**  It never calls `AUGraphStop` -- 0 times in 96 -- so
+                 * the quiet period below was the only thing that could end a
+                 * Lion response, at a fixed cost of 300 ms every time.  What
+                 * 10.7 does instead is *arm a deferred* graph stop: a GCD
+                 * one-shot five seconds out, which this host refuses because
+                 * letting it fire is what made Lion go deaf after five seconds
+                 * of silence.  The refusal is where the signal was.
+                 *
+                 * Measured, three shapes, `TIGER_TAIL_LOG` (since removed):
+                 *
+                 *   one sentence of Fred      last slice  33 ms, armed at  30
+                 *   three sentences of Alex   last slice 323 ms, armed at 320
+                 *   an unbroken 370-char token, Alex
+                 *                             last slice 1598 ms, armed at 1573
+                 *
+                 * Armed **exactly once** per utterance in every case, within
+                 * 25 ms of the last slice -- including Brandon's issue-#4 token,
+                 * which is the case that killed the last attempt at shortening
+                 * this (see below).  And the engine really is finished: over
+                 * those same 300 ms it made zero clock polls and armed zero
+                 * timers.
+                 *
+                 * Slices still in flight are not a risk here.  Scheduling
+                 * ending is not the same as the audio having been read, which
+                 * is exactly what the pacer drain below this loop exists for --
+                 * this changes *when* we stop waiting for the engine, not
+                 * whether we wait for the audio.
+                 *
+                 * Tiger and Leopard are untouched by construction: neither
+                 * arms this timer -- Leopard imports no libdispatch at all --
+                 * so `g_defer_arm` stays zero and they leave on `AUGraphStop`
+                 * as they always have. */
+                if (g_defer_arm && g_pcm_n) break;
+                /* **Ask, rather than infer from silence.**
+                 *
+                 * The quiet period below is a guess that costs 300 ms on
+                 * every 10.7 utterance, because 10.7 never calls AUGraphStop
+                 * and there is nothing else to end on.  The Speech Manager's
+                 * own `stat` selector answers the question directly: its
+                 * first long is `outputBusy`.
+                 *
+                 * Guarded on audio having arrived, because the engine has not
+                 * necessarily started when the first tick runs and an idle
+                 * answer then would end the utterance before it began. */
+                if (g_ask_status && api.getinfo && g_pcm_n) {
+                    int idle = 0;
+                    if (speech_status_idle(&api, chan, &idle) == 0) {
+                        g_stat_ok++;
+                        if (idle) { g_stat_idle++; break; }
+                    } else {
+                        g_stat_refused++;
+                    }
+                }
+                if (cancel_requested()) {
+                    double cancel_started = wall_ms(), cancel_stopped;
+                    unsigned cancel_slices = g_slices;
+                    /* The listener has moved on.  Stop the engine rather than
+                     * render the rest of a sentence nobody will hear -- the
+                     * driver cannot start the next utterance until this
+                     * response ends, so finishing it politely *is* the lag. */
+                    InterlockedExchange(&g_au_cancel, 1);
+                    if (marked) markers_end();
+                    if (stopnow)
+                        call_aligned2((void *)stopnow, chan, (void *)0);
+                    cancel_stopped = wall_ms();
+                    /* Stopping the channel loses its rate and pitch.
+                     *
+                     * These are cached so that an unchanged setting costs no
+                     * call, and the cache does not know the engine has been
+                     * reset underneath it -- so the utterance *after* an
+                     * interruption was spoken at the engine's own default.
+                     * Measured at 280 wpm: 1.64x and 2.66x longer than it
+                     * should be, which at a fast reading rate is the whole
+                     * post crawling.  Invisible at 180 wpm, because 180 is
+                     * what it falls back to.
+                     *
+                     * Forget what we think the channel holds; the next
+                     * utterance sets it again. */
+                    currate = -1;
+                    curpitch = -1;
+                    /* Stopping is not the same as having stopped.  Wait for
+                     * the channel to go idle, or the text of the *next*
+                     * utterance queues behind what is left of this one and is
+                     * spoken after it.  Bounded: an engine that never goes
+                     * idle must not wedge the driver, and speaking something
+                     * stale is better than speaking nothing ever again. */
+                    /* Then throw away what is left in the channel.
+                     *
+                     * 'rset' is the Speech Manager's own reset selector, and
+                     * it is what actually discards the remainder: waiting for
+                     * outputBusy to clear does not work, because it never
+                     * does -- measured, the channel still reports busy 400 ms
+                     * after being stopped, and the wait alone was hiding the
+                     * fault by giving the engine time to drain.  A fix that
+                     * works by being slow is the fault wearing a hat. */
+                    if (setinfo && g_use_reset) {
+                        unsigned zero = 0;
+                        call_aligned3((void *)setinfo, chan, (void *)SEL_RESET,
+                                      &zero);
+                    }
+                    /* Do not hand the next request a timeline that still has
+                     * callbacks from this one. On failure close the protocol;
+                     * the client must replace this process before speaking. */
+                    if (!settle_cancelled_audio()) return 1;
+                    if (g_cancel_trace)
+                        fprintf(stderr, "  [cancel] stop=%.1fms settle=%.1fms slices=%u->%u\n",
+                                cancel_stopped - cancel_started,
+                                wall_ms() - cancel_stopped, cancel_slices, g_slices);
+                    cancelled = 1;
+                    break;
+                }
+                if (g_slices != last) { last = g_slices; quiet = 0; }
+                else quiet++;
+                /* Send what has settled, every tick.  The engine runs at about
+                 * ninety times real time, so after the first chunk there are
+                 * seconds of audio buffered ahead and playback cannot underrun
+                 * however long the text is.
+                 *
+                 * And once the slices have stopped coming, send the margin
+                 * too, rather than sitting on it until the response ends --
+                 * see STREAM_SETTLE.  This is what keeps a rate-boosted
+                 * utterance in one piece. */
+                if (marked) {
+                    unsigned upto = quiet >= STREAM_SETTLE ? g_pcm_n :
+                        (g_pcm_n > STREAM_LOOKBEHIND ? g_pcm_n - STREAM_LOOKBEHIND : 0);
+                    if (!marker_failed && !stream_markers(&sent, upto)) marker_failed = 1;
+                } else if (streaming) {
+                    if (quiet >= STREAM_SETTLE)
+                        sent = stream_chunk(sent, g_pcm_n);
+                    else if (g_pcm_n > STREAM_LOOKBEHIND)
+                        sent = stream_chunk(sent, g_pcm_n - STREAM_LOOKBEHIND);
+                }
+            }
+            if (g_float_stats)
+                fprintf(stderr, "  [au] the engine armed its deferred "
+                                "graph stop %u time(s); the wait ran %u "
+                                "tick(s)\n", g_defer_arm, ticks);
+            /* The engine has stopped *scheduling*, which is not the same as
+             * the audio having been read.
+             *
+             * g_slices counts slices as they arrive; collect_slice runs a beat
+             * later on the pacer thread, because a ScheduledSoundPlayer's
+             * completion fires when the audio has played rather than when it
+             * was queued.  Returning as soon as scheduling goes quiet takes a
+             * snapshot of a timeline the pacer is still filling in, so the
+             * tail of the utterance is missing -- and then the next request
+             * sets g_pcm_n back to 0 while the pacer is still writing, which
+             * drops one utterance's audio into the middle of the next.
+             *
+             * It is timing, so it did not look like a bug: the same text came
+             * back 2.29 s in a warm session and 4.49 s in a cold one, and only
+             * the long one had all the words in it.
+             *
+             * Wait for the queue to drain.  Two-millisecond ticks, a second's
+             * worth: an utterance's worth of slices drains in a few of them at
+             * the default clock, and if it ever does not, say so. */
+            if (g_gcd_log)
+                fprintf(stderr, "tiger_host: [%u] scheduling ended, %u slice(s)"
+                                ", %u frame(s)\n", g_utt, g_slices, g_pcm_n);
+            for (ticks = 0; !pacer_idle() && ticks < 500; ticks++) Sleep(2);
+            if (!pacer_idle())
+                fprintf(stderr, "tiger_host: the pacer was still collecting "
+                                "audio a second after the engine stopped\n");
+            if (cancelled)
+                printf("  [au] utterance abandoned at %u frames -- the "
+                       "listener interrupted\n", g_pcm_n);
+            if (g_stale_slices)
+                printf("  [au] %u slice(s) arrived for an utterance already "
+                       "answered, and were not collected\n", g_stale_slices);
+        }
+
+        /* Anything the engine did that a user would notice goes out at a
+         * level they will actually see.
+         *
+         * The driver files a line beginning "tiger_host:" at WARNING and
+         * everything else at DEBUG, and DEBUG is off by default and awkward to
+         * turn on -- which is precisely how a broken start-up dialog sat in a
+         * log for months.  A diagnostic nobody can read has not been reported.
+         * So say it once per affected utterance, plainly, and stay silent when
+         * there is nothing wrong. */
+        if (g_dup_slices)
+            fprintf(stderr, "tiger_host: %u repeated slice(s) refused in this "
+                            "utterance -- the engine re-sent audio it had "
+                            "already given us\n", g_dup_slices);
+        if (g_empty_run >= SLICE_EMPTY_LIMIT)
+            fprintf(stderr, "tiger_host: the engine stopped producing audio "
+                            "after %u frames\n", g_pcm_n);
+        if (g_p_drops)
+            fprintf(stderr, "tiger_host: %u slice(s) dropped -- the pacer "
+                            "queue overflowed and that audio is lost\n",
+                    g_p_drops);
+        /* The two decoder drivers side by side.  Tiger's engine drives
+         * SoundConverter, which decodes one self-contained unit at a time and
+         * is byte-perfect; Leopard's drives AudioConverter, which streams.
+         * Same voice bytes, same decode core -- so the profile is where the
+         * difference has to show. */
+        if (g_float_stats)
+            fprintf(stderr, "  [aac] %u session(s), %u reset(s), %u packet(s) "
+                            "fed, %u lost\n",
+                    g_sc.sessions, g_sc.resets, g_pkts_fed, g_sc.lost);
+        if (g_float_stats)
+            fprintf(stderr, "  [sql] %u database(s) open, %u phrasing row(s) "
+                            "matched\n", g_sql_opens, g_sql_rows);
+        /* What a streamed response would need to know: whether SESpeakBuffer
+         * returns before the audio exists (so the wait loop is free to send
+         * what has arrived), how long the audio kept coming, and whether any
+         * slice landed behind frames already collected -- which is the one
+         * thing streaming cannot survive, because sent audio cannot be
+         * unsent. */
+        if (g_float_stats)
+            fprintf(stderr, "  [wait] usleep %u/%.0f ms, mpqueue %u/%.0f ms, "
+                            "gcd timer %u/%.0f ms, condvar %u/%.0f ms\n",
+                    g_w_usleep_n, g_w_usleep_ms, g_w_mpq_n, g_w_mpq_ms,
+                    g_w_src_n, g_w_src_ms, g_w_cnd_n, g_w_cnd_ms);
+        if (g_float_stats && g_gcd_handler)
+            fprintf(stderr, "  [gcd] handler %s\n",
+                    engine_symbol(g_gcd_handler));
+        if (g_float_stats)
+            fprintf(stderr, "  [stat] answered %u, refused %u, said idle %u\n",
+                    g_stat_ok, g_stat_refused, g_stat_idle);
+        if (g_float_stats)
+            fprintf(stderr, "  [au] start %u, stop %u, uninitialize %u, "
+                            "isInitialized %u, widest gap between slices "
+                            "%.1f ms\n",
+                    g_au_start, g_au_stop, g_au_uninit, g_au_isinit,
+                    g_slice_gap_max);
+        if (g_float_stats) {
+            LARGE_INTEGER f; QueryPerformanceFrequency(&f);
+            fprintf(stderr, "  [gcd] %u source(s) made, %u of them reused "
+                            "slots\n", g_src_made, g_src_reused);
+            fprintf(stderr, "  [prof] aac %.1f ms in %u call(s), "
+                            "fft %.1f ms in %u\n",
+                    g_t_aac * 1000.0 / f.QuadPart, g_n_aac,
+                    g_t_fft * 1000.0 / f.QuadPart, g_n_fft);
+        }
+        if (g_float_stats)
+            fprintf(stderr, "  [clock] gettimeofday %u, UpTime %u\n",
+                    g_c_gtod, g_c_uptime);
+        if (g_float_stats)
+            fprintf(stderr, "  [gcd] set_timer %u (%u for now), waits: %u zero-delay, %u fired, %u re-armed\n",
+                    g_w_settimer, g_w_settimer_now, g_w_src_zero,
+                    g_w_src_fire, g_w_src_rearm);
+        if (g_float_stats)
+            fprintf(stderr, "  [str] speak returned at %.1f ms, first slice "
+                            "%.1f ms, last %.1f ms, %u frame(s); %u slice(s) "
+                            "landed behind the frontier, furthest %u frame(s)"
+                            "\n",
+                    speak_ms, g_first_slice_ms, g_last_slice_ms, g_pcm_n,
+                    g_back_slices, g_back_max);
+
+        if (streaming) {
+            /* The tail, then a zero-length chunk to say that is all of it.
+             * The margin held back during the render is released here, so a
+             * streamed response carries exactly the frames a blocking one
+             * would -- which is what the streaming test checks. */
+            unsigned zero = 0;
+            (void)i; (void)nframes;
+            /* An abandoned utterance sends no tail.  Every frame of it is
+             * audio the listener has already declined, and pushing what may
+             * be megabytes of it through the pipe for the driver to discard
+             * is most of the delay the cancel exists to remove -- measured,
+             * it was the difference between 446 ms and not noticing. */
+            if (marked) {
+                if (!cancelled && !err) {
+                    if (!stream_markers(&sent, g_pcm_n)) marker_failed = 1;
+                    EnterCriticalSection(&g_markers.lock);
+                    if (g_markers.frontier != g_pcm_n ||
+                        g_markers.consumed != g_markers.count) marker_failed = 1;
+                    LeaveCriticalSection(&g_markers.lock);
+                    if (marker_failed) {
+                        unsigned tag = STREAM_ERROR;
+                        int code = -32002;
+                        fwrite(&tag, 4, 1, g_out);
+                        fwrite(&code, 4, 1, g_out);
+                    }
+                }
+                markers_end();
+            } else if (!cancelled)
+                sent = stream_chunk(sent, g_pcm_n);
+            fwrite(&zero, 4, 1, g_out);
+            fflush(g_out);
+        } else {
+            nframes = g_pcm_n;
+            magic = RSP_MAGIC;
+            fwrite(&magic, 4, 1, g_out);
+            fwrite(&err, 4, 1, g_out);
+            fwrite(&nframes, 4, 1, g_out);
+            put_frames(0, nframes);
+            fflush(g_out);
+        }
+    }
+}

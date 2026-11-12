@@ -1,0 +1,19 @@
+# Keep downloaded Apple components and local test results out of version control.
+/data/
+/cache/
+/build/
+/dist/
+/research/
+/.venv/
+__pycache__/
+*.py[cod]
+*.dmg
+*.pkg
+*.dylib
+*.SpeechVoice/
+PCMWave
+VoiceDescription
+*.wav
+/addon/synthDrivers/_alex_native/alex_host.exe
+/build-glint/
+/PROGRESS.md
