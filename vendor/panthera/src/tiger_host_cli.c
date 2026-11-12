@@ -58,6 +58,68 @@ invalid:
     fprintf(stderr,"tiger_host: input must be valid UTF-8\n");free(out);return NULL;
 }
 
+#if defined(__i386__) && defined(__GNUC__)
+/* This probe has no compiler prologue: Darwin i386 expects ESP modulo 16 to be 12 on entry, before the callee saves its frame pointer. */
+static __attribute__((naked, noinline)) int cli_stack_probe(void *unused)
+{
+    __asm__ volatile("movl %esp, %eax\n\tandl $15, %eax\n\tret\n\t");
+}
+/* Win32 promises only four-byte alignment. Deliberately supply such a callback stack instead of relying on whatever alignment this compiler happened to give main. */
+static __attribute__((naked, noinline)) int cli_unaligned_call(void *wrapper, void *probe)
+{
+    __asm__ volatile(
+        "pushl %ebp\n\tmovl %esp, %ebp\n\tandl $-16, %esp\n\tsubl $40, %esp\n\t"
+        "movl 12(%ebp), %eax\n\tmovl %eax, 0(%esp)\n\t"
+        "movl $0, 4(%esp)\n\tmovl $0, 8(%esp)\n\tmovl $0, 12(%esp)\n\t"
+        "movl $0, 16(%esp)\n\tmovl $0, 20(%esp)\n\t"
+        "call *8(%ebp)\n\tmovl %ebp, %esp\n\tpopl %ebp\n\tret\n\t");
+}
+static int cli_stack_check_once(void)
+{
+    int failed = 0;
+    if (call_aligned1((void *)cli_stack_probe, NULL) != 12) failed++;
+    if (call_aligned2((void *)cli_stack_probe, NULL, NULL) != 12) failed++;
+    if (call_aligned3((void *)cli_stack_probe, NULL, NULL, NULL) != 12) failed++;
+    if (call_aligned4((void *)cli_stack_probe, NULL, NULL, NULL, NULL) != 12) failed++;
+    if (call_aligned5((void *)cli_stack_probe, NULL, NULL, NULL, NULL, NULL) != 12) failed++;
+#ifdef _WIN32
+    if (cli_unaligned_call((void *)call_aligned1, (void *)cli_stack_probe) != 12) failed++;
+    if (cli_unaligned_call((void *)call_aligned2, (void *)cli_stack_probe) != 12) failed++;
+    if (cli_unaligned_call((void *)call_aligned3, (void *)cli_stack_probe) != 12) failed++;
+    if (cli_unaligned_call((void *)call_aligned4, (void *)cli_stack_probe) != 12) failed++;
+    if (cli_unaligned_call((void *)call_aligned5, (void *)cli_stack_probe) != 12) failed++;
+#endif
+    return failed;
+}
+#ifdef _WIN32
+static DWORD WINAPI cli_stack_check_thread(void *result)
+{
+    *(int *)result = cli_stack_check_once();
+    return 0;
+}
+#endif
+#endif
+
+static int cli_stack_check(void)
+{
+    int failed = 0;
+#if defined(__i386__) && defined(__GNUC__)
+    failed = cli_stack_check_once();
+#ifdef _WIN32
+    {
+        int thread_failed = 0;
+        HANDLE thread = CreateThread(NULL, 0, cli_stack_check_thread, &thread_failed, 0, NULL);
+        if (!thread) return 1;
+        WaitForSingleObject(thread, INFINITE);
+        CloseHandle(thread);
+        failed += thread_failed;
+    }
+#endif
+#endif
+    fprintf(stderr, "[stack-check] %d failure(s)\n", failed);
+    return failed;
+}
+
 /* The Windows CRT's tmpfile can try the drive root, which a standard user cannot write. Use the user's temporary directory and delete-on-close instead. */
 static FILE *cli_tempfile(void)
 {

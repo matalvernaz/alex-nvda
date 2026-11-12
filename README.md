@@ -28,6 +28,9 @@ No Apple engines, voice recordings, installers, dictionaries, generated Apple ma
 - The actual Apple Alex download and installer have been downloaded and extracted locally.
 - Real synthesis has been exercised through the i386 Linux build of the same host under QEMU, including the silent-start regression that was fixed during development.
 - The packaged Windows host is cross-compiled with MinGW and includes the Glint AAC decoder.
+- The actual Windows executable has synthesized non-silent Alex speech locally under Wine/QEMU. This caught and fixed a Windows callback-stack alignment fault that compilation alone did not detect.
+- The actual NVDA speech pipeline has been driven against the real engine with NVDA API test doubles: streamed audio, cancellation, replacement speech, rate changes and positioned reading markers were exercised. These checks do not replace an NVDA listening test.
+- GitHub builds and executes the native host's data-free checks on Windows, including temporary-file handling and stack alignment. Its setup tests use synthetic fixtures only; no Apple files are fetched in CI.
 - Windows/NVDA playback, accessible control behavior and rapid navigation still require testing on Windows. Linux tests and NVDA API test doubles cannot establish those behaviors.
 
 The first release is a test build, not a claim that those Windows checks have passed. The add-on targets NVDA 2024.1 and later on Windows 10/11. Sign-in and secure-desktop use are not included in this build.
@@ -49,6 +52,6 @@ The builder exports a pinned Glint commit and applies Panthera's decoder patches
 
 The Mach-O loader, macOS API compatibility code, speech pipeline, markers, text handling and disk-image reader come from Tamas Geczy's MIT-licensed Panthera Speech, pinned at `7b93500091924b779f9d6f8b482563096b0b705a`. Its license is preserved under `vendor/panthera/LICENSE` and in the add-on.
 
-The setup interface, Apple-only downloader, nested installer reader, transactional installation, speech health check and separate Alex driver are additions here. Native changes make the host compile with MinGW, preserve thread-local state, and wait for Lion's completion signal instead of treating a cold voice's startup silence as completed speech.
+The setup interface, Apple-only downloader, nested installer reader, transactional installation, speech health check and separate Alex driver are additions here. Native changes make the host compile with MinGW, preserve thread-local state, explicitly align Win32 callbacks for Darwin, use the user's temporary directory for the setup test, and wait for Lion's completion signal instead of treating a cold voice's startup silence as completed speech.
 
 Glint is by CrispStrobe, pinned at `77738f3ed9b15f627196cc5bbd7f6406814ba2fb`, MIT licensed. Its code is fetched only while building and compiled into the host. Its notice and the compiler runtime notices accompany the add-on. Apple's files are not covered by these projects' licenses.

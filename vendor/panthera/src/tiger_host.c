@@ -851,6 +851,7 @@ int main(int argc, char **argv)
 
     if(argc>1&&!strcmp(argv[1],"--help")){cli_help();return 0;}
     if(argc>1&&!strcmp(argv[1],"--tempfile-check"))return cli_tempfile_check();
+    if(argc>1&&!strcmp(argv[1],"--stack-check"))return cli_stack_check();
     if(argc>1&&!strcmp(argv[1],"--render"))return cli_render(argc,argv);
 #ifndef TIGER_UC
     if(argc>1&&!strcmp(argv[1],"--audio-timeline-check"))return timeline_check();

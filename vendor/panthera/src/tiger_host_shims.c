@@ -651,6 +651,49 @@ static int call_aligned4(void *fn, void *a, void *b, void *c, void *d)
 { return uc_call4(fn, a, b, c, d); }
 static int call_aligned5(void *fn, void *a, void *b, void *c, void *d, void *e)
 { return uc_call5(fn, a, b, c, d, e); }
+#elif defined(_WIN32) && defined(__GNUC__)
+/* Win32 thread callbacks can enter GCC with a four-byte-aligned stack. Realign every call into Apple's Darwin i386 code explicitly, including calls GCC would otherwise turn into tail calls. */
+#define ALIGNED_ENTER \
+    "pushl %ebp\n\t" \
+    "movl %esp, %ebp\n\t" \
+    "andl $-16, %esp\n\t"
+#define ALIGNED_LEAVE \
+    "call *8(%ebp)\n\t" \
+    "movl %ebp, %esp\n\t" \
+    "popl %ebp\n\t" \
+    "ret\n\t"
+#define ALIGNED_ARGUMENT_1 "movl 12(%ebp), %eax\n\tmovl %eax, 0(%esp)\n\t"
+#define ALIGNED_ARGUMENT_2 "movl 16(%ebp), %eax\n\tmovl %eax, 4(%esp)\n\t"
+#define ALIGNED_ARGUMENT_3 "movl 20(%ebp), %eax\n\tmovl %eax, 8(%esp)\n\t"
+#define ALIGNED_ARGUMENT_4 "movl 24(%ebp), %eax\n\tmovl %eax, 12(%esp)\n\t"
+#define ALIGNED_ARGUMENT_5 "movl 28(%ebp), %eax\n\tmovl %eax, 16(%esp)\n\t"
+static __attribute__((naked, noinline)) int call_aligned1(void *fn, void *a)
+{
+    __asm__ volatile(ALIGNED_ENTER "subl $16, %esp\n\t" ALIGNED_ARGUMENT_1 ALIGNED_LEAVE);
+}
+static __attribute__((naked, noinline)) int call_aligned2(void *fn, void *a, void *b)
+{
+    __asm__ volatile(ALIGNED_ENTER "subl $16, %esp\n\t" ALIGNED_ARGUMENT_1 ALIGNED_ARGUMENT_2 ALIGNED_LEAVE);
+}
+static __attribute__((naked, noinline)) int call_aligned3(void *fn, void *a, void *b, void *c)
+{
+    __asm__ volatile(ALIGNED_ENTER "subl $16, %esp\n\t" ALIGNED_ARGUMENT_1 ALIGNED_ARGUMENT_2 ALIGNED_ARGUMENT_3 ALIGNED_LEAVE);
+}
+static __attribute__((naked, noinline)) int call_aligned4(void *fn, void *a, void *b, void *c, void *d)
+{
+    __asm__ volatile(ALIGNED_ENTER "subl $16, %esp\n\t" ALIGNED_ARGUMENT_1 ALIGNED_ARGUMENT_2 ALIGNED_ARGUMENT_3 ALIGNED_ARGUMENT_4 ALIGNED_LEAVE);
+}
+static __attribute__((naked, noinline)) int call_aligned5(void *fn, void *a, void *b, void *c, void *d, void *e)
+{
+    __asm__ volatile(ALIGNED_ENTER "subl $32, %esp\n\t" ALIGNED_ARGUMENT_1 ALIGNED_ARGUMENT_2 ALIGNED_ARGUMENT_3 ALIGNED_ARGUMENT_4 ALIGNED_ARGUMENT_5 ALIGNED_LEAVE);
+}
+#undef ALIGNED_ENTER
+#undef ALIGNED_LEAVE
+#undef ALIGNED_ARGUMENT_1
+#undef ALIGNED_ARGUMENT_2
+#undef ALIGNED_ARGUMENT_3
+#undef ALIGNED_ARGUMENT_4
+#undef ALIGNED_ARGUMENT_5
 #elif !defined(_MSC_VER)
 /* Native i386 with a compiler that supplies the required stack alignment.
  *
