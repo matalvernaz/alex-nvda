@@ -11,6 +11,9 @@ static cfobj *parse_xml(const char *text) {
 }
 
 int main(void) {
+#ifdef _WIN64
+	if (modern_windows_runtime_check()) { return 31; }
+#endif
 	cfobj *dictionary = parse_xml("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>a&amp;b</key><array><integer>7</integer><string>&#x41;</string><true/></array></dict></plist>");
 	if (!dictionary || dictionary->kind != CF_DICT || dictionary->nbytes != 1) { return 1; }
 	cfobj *array = (cfobj *)sh_CFDictionaryGetValue(dictionary, cf_pinned("a&b"));

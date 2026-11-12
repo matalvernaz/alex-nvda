@@ -46,8 +46,8 @@ def usable():
 
 def selected_tree():
 	"""Freeze the engine for this driver so changing setup cannot mix two host processes."""
-	installation = paths.active_installation()
-	engine = paths.selected_engine() or "legacy"
+	engine, installation = paths.active_engine_tree()
+	engine = engine or "legacy"
 	executable = str(paths.host_executable(engine))
 	return SimpleNamespace(
 		TEXT_ENCODING="utf-8" if engine == "modern" else "mac_roman",

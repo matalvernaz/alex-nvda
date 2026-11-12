@@ -171,12 +171,17 @@ def remove_engine(root, engine):
 		shutil.rmtree(tree)
 
 
-def active_installation(root=None):
+def active_engine_tree(root=None):
+	"""Read the chosen host and its tree from one atomic manifest snapshot."""
 	root = Path(root) if root is not None else data_root()
 	try:
 		state = _read_state(root / "current.json")
 		engine = state.get("engine_key", "legacy")
 		tree = _managed_tree(root, state)
-		return tree if engine in ENGINE_NAMES and complete_tree(tree, engine) else None
+		return (engine, tree) if engine in ENGINE_NAMES and complete_tree(tree, engine) else (None, None)
 	except (OSError, ValueError, KeyError, TypeError, AttributeError):
-		return None
+		return None, None
+
+
+def active_installation(root=None):
+	return active_engine_tree(root)[1]

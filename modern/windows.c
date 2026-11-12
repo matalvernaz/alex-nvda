@@ -110,14 +110,75 @@ static void __cdecl windows_uiter_setString(windows_iterator *iterator, const ui
 	}
 }
 
-static int32_t __cdecl windows_unorm_next(void *iterator, uint16_t *output, int32_t capacity, int mode, int32_t options, int8_t normalize, int8_t *needed, int32_t *error) {
-	typedef int32_t (*function_type)(void *, uint16_t *, int32_t, int, int32_t, int8_t, int8_t *, int32_t *);
-	// ICU calls the iterator itself, while the engine calls it using Darwin's ABI. Keep the two callback tables separate.
-	windows_iterator native = *(windows_iterator *)iterator;
-	memcpy(native.functions, windows_iterator_functions, sizeof native.functions);
-	int32_t result = ((function_type)windows_icu_function("unorm_next"))(&native, output, capacity, mode, options, normalize, needed, error);
-	((windows_iterator *)iterator)->index = native.index;
-	return result;
+static const void *windows_normalizer(int mode, int32_t options, int32_t *error) {
+	static const void *filtered[7];
+	const char *getter;
+	switch (mode) {
+		case 1: return NULL;
+		case 2: getter = "unorm2_getNFDInstance"; break;
+		case 3: getter = "unorm2_getNFKDInstance"; break;
+		case 4: getter = "unorm2_getNFCInstance"; break;
+		case 5: getter = "unorm2_getNFKCInstance"; break;
+		case 6: getter = NULL; break;
+		default: *error = 1; return NULL;
+	}
+	const void *normalizer;
+	if (getter) {
+		typedef const void *(*function_type)(int32_t *);
+		normalizer = ((function_type)windows_icu_function(getter))(error);
+	}
+	else {
+		typedef const void *(*function_type)(const char *, const char *, int, int32_t *);
+		normalizer = ((function_type)windows_icu_function("unorm2_getInstance"))(NULL, "nfc", 2, error);
+	}
+	if (*error > 0 || !(options & 0x20)) { return normalizer; }
+	if (!filtered[mode]) {
+		typedef void *(*set_type)(const uint16_t *, int32_t, int32_t *);
+		typedef const void *(*filter_type)(const void *, const void *, int32_t *);
+		// The filter and its normalizer live together for this isolated host's lifetime.
+		void *set = ((set_type)windows_icu_function("uset_openPattern"))((const uint16_t *)L"[:age=3.2:]", -1, error);
+		if (*error <= 0) { filtered[mode] = ((filter_type)windows_icu_function("unorm2_openFiltered"))(normalizer, set, error); }
+	}
+	return filtered[mode];
+}
+
+static int32_t __cdecl windows_unorm_next(void *value, uint16_t *output, int32_t capacity, int mode, int32_t options, int8_t normalize, int8_t *needed, int32_t *error) {
+	// Windows omits deprecated unorm_next. Implement its iterator contract with supported Normalizer2 APIs.
+	if (!error || *error > 0) { return 0; }
+	windows_iterator *iterator = value;
+	if (!iterator || capacity < 0 || (!output && capacity) || iterator->index < iterator->start || iterator->index > iterator->limit || iterator->limit > MODERN_MAXIMUM_TEXT_UNITS || (!iterator->context && iterator->limit)) {
+		*error = 1;
+		return 0;
+	}
+	const void *normalizer = windows_normalizer(mode, options, error);
+	if (*error > 0) { return 0; }
+	typedef int8_t (*boundary_type)(const void *, int32_t);
+	boundary_type boundary = normalizer ? (boundary_type)windows_icu_function("unorm2_hasBoundaryBefore") : NULL;
+	const uint16_t empty[1] = { 0 };
+	const uint16_t *text = iterator->context ? iterator->context : empty;
+	int32_t start = iterator->index, end = start;
+	while (end < iterator->limit) {
+		int32_t character = text[end], width = 1;
+		if (character >= 0xd800 && character <= 0xdbff && end + 1 < iterator->limit && text[end + 1] >= 0xdc00 && text[end + 1] <= 0xdfff) {
+			character = 0x10000 + ((character - 0xd800) << 10) + text[end + 1] - 0xdc00;
+			width = 2;
+		}
+		if (end != start && (!boundary || boundary(normalizer, character))) { break; }
+		end += width;
+	}
+	iterator->index = end;
+	if (needed) { *needed = 0; }
+	int32_t length = end - start;
+	if (normalize && normalizer) {
+		typedef int32_t (*function_type)(const void *, const uint16_t *, int32_t, uint16_t *, int32_t, int32_t *);
+		int32_t result = ((function_type)windows_icu_function("unorm2_normalize"))(normalizer, text + start, length, output, capacity, error);
+		if (needed && *error <= 0) { *needed = result != length || (length && memcmp(output, text + start, length * 2) != 0); }
+		return result;
+	}
+	if (capacity) { memcpy(output, text + start, (length < capacity ? length : capacity) * 2); }
+	if (length < capacity) { output[length] = 0; }
+	else { *error = length > capacity ? 15 : -124; }
+	return length;
 }
 
 static int32_t __cdecl windows_u_charName(int32_t character, int choice, char *output, int32_t capacity, int32_t *error) {
@@ -183,6 +244,19 @@ static int modern_windows_runtime_check(void) {
 	int32_t error = 0;
 	int8_t needed;
 	if (windows_unorm_next(&iterator, output, 16, 2, 0, 1, &needed, &error) < 1 || error > 0 || output[0] != 'a') { die("the Windows Unicode normalization check failed"); }
+	const uint16_t accent[] = { 0xe9, 'x' }, combining[] = { 'e', 0x301, 'x' }, emoji[] = { 0xd83d, 0xde00, 'x' };
+	error = 0;
+	windows_uiter_setString(&iterator, accent, 2);
+	if (windows_unorm_next(&iterator, output, 16, 2, 0, 1, &needed, &error) != 2 || error > 0 || output[0] != 'e' || output[1] != 0x301 || iterator.index != 1 || !needed) { die("the Windows Unicode decomposition check failed"); }
+	error = 0;
+	windows_uiter_setString(&iterator, combining, 3);
+	if (windows_unorm_next(&iterator, output, 16, 4, 0, 1, &needed, &error) != 1 || error > 0 || output[0] != 0xe9 || iterator.index != 2 || !needed) { die("the Windows Unicode composition boundary check failed"); }
+	error = 0;
+	windows_uiter_setString(&iterator, emoji, 3);
+	if (windows_unorm_next(&iterator, output, 16, 2, 0x20, 1, &needed, &error) != 2 || error > 0 || output[0] != 0xd83d || output[1] != 0xde00 || iterator.index != 2 || needed) { die("the Windows Unicode surrogate/filter check failed"); }
+	error = 0;
+	windows_uiter_setString(&iterator, accent, 2);
+	if (windows_unorm_next(&iterator, NULL, 0, 2, 0, 1, &needed, &error) != 2 || error != 15 || iterator.index != 1) { die("the Windows Unicode overflow check failed"); }
 	char name[128];
 	error = 0;
 	if (windows_u_charName(0x1f600, 0, name, sizeof name, &error) <= 0 || error > 0 || !windows_u_isgraph('a')) { die("the Windows Unicode character check failed"); }
