@@ -58,6 +58,58 @@ invalid:
     fprintf(stderr,"tiger_host: input must be valid UTF-8\n");free(out);return NULL;
 }
 
+/* The Windows CRT's tmpfile can try the drive root, which a standard user cannot write. Use the user's temporary directory and delete-on-close instead. */
+static FILE *cli_tempfile(void)
+{
+#ifdef _WIN32
+    wchar_t directory[MAX_PATH + 1], filename[MAX_PATH + 1];
+    DWORD length = GetTempPathW(MAX_PATH, directory);
+    HANDLE handle;
+    int descriptor;
+    FILE *stream;
+    if (!length || length >= MAX_PATH - 14) return NULL;
+    if (!GetTempFileNameW(directory, L"alx", 0, filename)) return NULL;
+    handle = CreateFileW(filename, GENERIC_READ | GENERIC_WRITE,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                        NULL, CREATE_ALWAYS,
+                        FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE,
+                        NULL);
+    if (handle == INVALID_HANDLE_VALUE) {
+        DeleteFileW(filename);
+        return NULL;
+    }
+    descriptor = _open_osfhandle((intptr_t)handle, _O_RDWR | _O_BINARY);
+    if (descriptor < 0) {
+        CloseHandle(handle);
+        return NULL;
+    }
+    stream = _fdopen(descriptor, "w+b");
+    if (!stream) _close(descriptor);
+    return stream;
+#else
+    return tmpfile();
+#endif
+}
+
+static int cli_tempfile_check(void)
+{
+    static const char expected[] = "Alex temporary stream check";
+    char received[sizeof(expected)];
+    FILE *stream = cli_tempfile();
+    int failed = 0;
+    if (!stream) {
+        fprintf(stderr, "[tempfile-check] could not open a temporary stream\n");
+        return 1;
+    }
+    if (fwrite(expected, 1, sizeof(expected), stream) != sizeof(expected)) failed = 1;
+    rewind(stream);
+    if (fread(received, 1, sizeof(received), stream) != sizeof(received) ||
+        memcmp(expected, received, sizeof(expected))) failed = 1;
+    fclose(stream);
+    fprintf(stderr, "[tempfile-check] %d failure(s)\n", failed);
+    return failed;
+}
+
 static int cli_render(int argc, char **argv)
 {
     const char *tree=NULL,*voice="Fred",*text=NULL,*input=NULL,*output="tiger-out.wav";
@@ -116,7 +168,7 @@ static int cli_render(int argc, char **argv)
     /* A diagnostic from any guest shim must not enter a piped WAV. */
     fflush(stdout);
     if(_dup2(_fileno(stderr),_fileno(stdout))<0)goto done;
-    request=tmpfile();response=tmpfile();
+    request=cli_tempfile();response=cli_tempfile();
     if(!request||!response){perror("temporary render stream");goto done;}
     _snprintf(prefix,sizeof prefix,"[[volm %d.%03d]]",volume/100,(volume%100)*10);
     namelen=(unsigned)strlen(voice);textlen=(unsigned)(strlen(prefix)+strlen(encoded));

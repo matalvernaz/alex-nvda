@@ -50,6 +50,7 @@ jobs:
           ./build/windows/alex_host.exe --numbers-check
           ./build/windows/alex_host.exe --regex-check
           ./build/windows/alex_host.exe --audio-timeline-check
+          ./build/windows/alex_host.exe --tempfile-check
       - name: Test setup and package contents
         run: |
           python -m unittest discover -s tests -v
