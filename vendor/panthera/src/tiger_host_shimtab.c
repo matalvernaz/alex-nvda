@@ -5,6 +5,33 @@
 
 typedef struct { const char *name; void *fn; } shim;
 static const shim g_shims[] = {
+#ifdef TIGER_GUEST_64
+    { "_sinhf", (void *)sinhf },
+    { "_pthread_cond_broadcast", (void *)modern_condition_broadcast },
+    { "_CEMStringContainsEmoji", (void *)modern_contains_emoji },
+    { "_CFStringGetCharactersPtr", (void *)modern_string_characters_pointer },
+    { "_AudioComponentCount", (void *)modern_audio_component_count },
+    { "_dispatch_workloop_create_inactive", (void *)modern_workloop_create },
+    { "_dispatch_workloop_set_scheduler_priority", (void *)modern_workloop_priority },
+    { "_dispatch_activate", (void *)sh_dispatch_resume },
+    { "_dispatch_set_qos_class_fallback", (void *)modern_dispatch_qos },
+    { "_dispatch_semaphore_create", (void *)modern_semaphore_create },
+    { "_dispatch_semaphore_signal", (void *)modern_semaphore_signal },
+    { "_dispatch_semaphore_wait", (void *)modern_semaphore_wait },
+    { "_dispatch_after", (void *)modern_dispatch_after },
+    { "_CFPropertyListCreateFromXMLData", (void *)sh_CFPropertyListCreateFromXMLData },
+    { "_CFPropertyListCreateWithStream", (void *)sh_CFPropertyListCreateWithStream },
+    { "_CFPropertyListCreateWithData", (void *)sh_CFPropertyListCreateWithData },
+    { "_CFReadStreamCreateWithFile", (void *)sh_CFReadStreamCreateWithFile },
+    { "_CFReadStreamOpen", (void *)sh_CFReadStreamOpen },
+    { "_CFReadStreamClose", (void *)sh_CFReadStreamClose },
+    { "_vDSP_create_fftsetup", (void *)sh_create_fftsetup },
+    { "_vDSP_destroy_fftsetup", (void *)sh_destroy_fftsetup },
+    { "_vDSP_fft_zrip", (void *)sh_fft_zrip },
+    { "_vDSP_ctoz", (void *)sh_ctoz },
+    { "_vDSP_ztoc", (void *)sh_ztoc },
+    { "_vDSP_vmul", (void *)sh_vmul },
+#endif
 #ifdef TIGER_UC
     /* Under emulation these must return memory the guest can dereference, so
      * they route to the guest arena (tiger_host_uc.c) rather than the host

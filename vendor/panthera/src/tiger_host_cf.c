@@ -29,7 +29,7 @@
 #define CF_MAGIC 0x54494743u            /* 'TIGC' */
 #define CFPATH   512
 
-typedef struct { gptr isa; unsigned flags; gptr cstr; unsigned len; }
+typedef struct { gptr isa; unsigned flags; gptr cstr; gptr len; }
         cfstring;
 /* Sixteen bytes, because the ENGINE says sixteen.  Every constant string in
  * the image is a __CFConstantString the engine hands us to read, laid out by
@@ -1185,6 +1185,16 @@ static speech_const g_speech_consts[] = {
     { "_kSpeechStatusOutputPaused",       "outputPaused" },
     { "_kSpeechStatusNumberOfCharactersLeft", "numberOfCharactersLeft" },
     { "_kSpeechStatusPhonemeCode",        "phonemeCode" },
+#ifdef TIGER_GUEST_64
+    { "_kSpeechDiphoneLogProperty", "diphoneLog" },
+    { "_kSpeechDiphoneOptionsProperty", "diphoneOptions" },
+    { "_kSpeechDiphoneStatisticsProperty", "diphoneStatistics" },
+    { "_kSpeechLatencyCallBack", "latencyCallback" },
+    { "_kSpeechOutputChannelMapProperty", "outputChannelMap" },
+    { "_kSpeechPitchCoeffProperty", "pitchCoefficients" },
+    { "_kSpeechPreloadVoiceMetadataProperty", "preloadVoiceMetadata" },
+    { "_kSpeechSynthExtensionProperty", "synthExtension" },
+#endif
     /* Found by the diagnostic below rather than by reading a header: the
      * phoneme-symbols dictionary is built at startup, before anything asks
      * for a property, so these were reached on the very first run. */

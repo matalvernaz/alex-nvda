@@ -168,10 +168,21 @@ static int __cdecl sh_DisposeAUGraph(void *g)
 #define kAudioTimeStampSampleTimeValid 1
 
 #define SLICE_PROC_OFF    64
+#ifdef TIGER_GUEST_64
+#define SLICE_DATA_OFF    72
+#define SLICE_FLAGS_OFF   80
+#define SLICE_FRAMES_OFF  96
+#define SLICE_BUFLIST_OFF 104
+#define BUFFER_LIST_FIRST_OFF 8
+#define AUDIO_BUFFER_SIZE 16
+#else
 #define SLICE_DATA_OFF    68
 #define SLICE_FLAGS_OFF   72
 #define SLICE_FRAMES_OFF  84
 #define SLICE_BUFLIST_OFF 88
+#define BUFFER_LIST_FIRST_OFF 4
+#define AUDIO_BUFFER_SIZE 12
+#endif
 #define SLICE_FLAG_COMPLETE 0x01
 
 /* Four minutes.  "Far more than needed" was two, until a singing voice turned
@@ -576,7 +587,7 @@ static void collect_slice(unsigned char *slice, unsigned epoch)
     g_last_stime = stime;
     nbufs = *(unsigned *)bl;
     for (i = 0; i < nbufs; i++) {
-        unsigned char *b = bl + 4 + i * 12;
+        unsigned char *b = bl + BUFFER_LIST_FIRST_OFF + i * AUDIO_BUFFER_SIZE;
         unsigned bytes = *(unsigned *)(b + 4);
         const float *data = (const float *)GHOST(*(gptr *)(b + 8));
         unsigned n = bytes / sizeof(float), j, pos;
@@ -612,12 +623,15 @@ static void collect_slice(unsigned char *slice, unsigned epoch)
 static void timeline_check_slice(unsigned epoch, double time, const float *samples, unsigned count)
 {
     union { double align; unsigned char bytes[SLICE_BUFLIST_OFF + sizeof(gptr)]; } slice;
-    unsigned buffers[4];
+    union { gptr align; unsigned char bytes[BUFFER_LIST_FIRST_OFF + AUDIO_BUFFER_SIZE]; } buffers;
     memset(&slice, 0, sizeof slice);
-    buffers[0] = 1; buffers[1] = 1; buffers[2] = count * sizeof(float);
-    buffers[3] = (gptr)(uintptr_t)samples;
+    memset(&buffers, 0, sizeof buffers);
+    *(unsigned *)buffers.bytes = 1;
+    *(unsigned *)(buffers.bytes + BUFFER_LIST_FIRST_OFF) = 1;
+    *(unsigned *)(buffers.bytes + BUFFER_LIST_FIRST_OFF + 4) = count * sizeof(float);
+    *(gptr *)(buffers.bytes + BUFFER_LIST_FIRST_OFF + 8) = (gptr)(uintptr_t)samples;
     *(unsigned *)(slice.bytes + SLICE_FRAMES_OFF) = count;
-    *(gptr *)(slice.bytes + SLICE_BUFLIST_OFF) = (gptr)(uintptr_t)buffers;
+    *(gptr *)(slice.bytes + SLICE_BUFLIST_OFF) = (gptr)(uintptr_t)&buffers;
     *(double *)(slice.bytes + SLICE_SAMPLETIME_OFF) = time;
     *(unsigned *)(slice.bytes + SLICE_TSFLAGS_OFF) = kAudioTimeStampSampleTimeValid;
     collect_slice(slice.bytes, epoch);
@@ -806,7 +820,7 @@ static void take_slice(unsigned char *slice)
     if (!bl) return;
     nbufs = *(unsigned *)bl;
     for (i = 0; i < nbufs; i++) {
-        unsigned char *b = bl + 4 + i * 12;
+        unsigned char *b = bl + BUFFER_LIST_FIRST_OFF + i * AUDIO_BUFFER_SIZE;
         unsigned bytes = *(unsigned *)(b + 4);
         const float *data = (const float *)GHOST(*(gptr *)(b + 8));
         unsigned n = bytes / sizeof(float), j;

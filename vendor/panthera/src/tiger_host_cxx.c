@@ -168,10 +168,19 @@ static unsigned g_preads, g_pread_bytes, g_pread_short;
  * ReadFile with an OVERLAPPED offset reads from where it is told without
  * depending on the shared position, which is what Darwin's pread promises.
  */
+#ifdef TIGER_GUEST_64
+static int __cdecl sh_pread(int fd, void *buf, size_t n, int64_t want)
+#else
 static int __cdecl sh_pread(int fd, void *buf, unsigned n,
                             unsigned off_lo, unsigned off_hi)
+#endif
 {
+#ifndef TIGER_GUEST_64
     long long want = ((long long)off_hi << 32) | (unsigned)off_lo;
+#else
+    unsigned off_lo = (unsigned)want;
+    unsigned off_hi = (unsigned)((uint64_t)want >> 32);
+#endif
     HANDLE h = (HANDLE)_get_osfhandle(fd);
     OVERLAPPED ov;
     DWORD got = 0;

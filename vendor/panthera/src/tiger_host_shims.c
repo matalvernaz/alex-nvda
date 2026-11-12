@@ -19,6 +19,9 @@ static int g_nmissing;
 
 static int __cdecl shim_missing(int idx)
 {
+#ifdef TIGER_GUEST_64
+    die("modern engine reached an unimplemented dependency: %s", idx >= 0 && idx < g_nmissing ? g_missing[idx] : "invalid symbol index");
+#endif
     if (idx >= 0 && idx < g_nmissing) {
         if (g_missing_hits[idx]++ == 0 && g_verbose)
             printf("  [shim] first call: %s\n", g_missing[idx]);
@@ -424,8 +427,13 @@ static int __cdecl sh_gettimeofday(void *tv, void *tz)
     g_c_gtod++;
     if (!out) return -1;
     t = wall_us_scaled();
+#ifdef TIGER_GUEST_64
+    *(int64_t *)tv = (int64_t)(t / 1000000ULL);
+    *(int32_t *)((char *)tv + 8) = (int32_t)(t % 1000000ULL);
+#else
     out[0] = (unsigned)(t / 1000000ULL);
     out[1] = (unsigned)(t % 1000000ULL);
+#endif
     return 0;
 }
 /* pthread_once_t is NOT zero-initialised on Darwin: PTHREAD_ONCE_INIT puts the
@@ -1064,7 +1072,7 @@ static int __cdecl sh_isamax(int n, const float *x, int incx)
     }
     return best;
 }
-static void __cdecl sh_sscal(int n, unsigned abits, float *x, int incx)
+static void __cdecl sh_sscal(int n, guest_float abits, float *x, int incx)
 {
     float a = GFLOAT(abits);
     int i;
@@ -1077,7 +1085,7 @@ static void __cdecl sh_scopy(int n, const float *x, int incx, float *y, int incy
     if (!x || !y) return;
     for (i = 0; i < n; i++) y[i * incy] = x[i * incx];
 }
-static void __cdecl sh_saxpy(int n, unsigned abits, const float *x, int incx,
+static void __cdecl sh_saxpy(int n, guest_float abits, const float *x, int incx,
                              float *y, int incy)
 {
     float a = GFLOAT(abits);
@@ -1101,9 +1109,9 @@ static float __cdecl sh_snrm2(int n, const float *x, int incx)
     return (float)sqrt(s);
 }
 static void __cdecl sh_sgemv(int order, int trans, int m, int n,
-                             unsigned alphabits,
+                             guest_float alphabits,
                              const float *a, int lda, const float *x, int incx,
-                             unsigned betabits, float *y, int incy)
+                             guest_float betabits, float *y, int incy)
 {
     float alpha = GFLOAT(alphabits), beta = GFLOAT(betabits);
     int i, j;

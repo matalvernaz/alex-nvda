@@ -34,8 +34,13 @@ typedef struct { unsigned bytes, dev, ino, mode, size; } darwin_stat_layout;
 
 /* st_ino is 4 bytes wide in the first and 8 in the second; the fill zeroes the
  * whole struct first, so only the offset has to be said out loud. */
+#ifdef TIGER_GUEST_64
+static const darwin_stat_layout DARWIN_STAT = { 144, 0, 8, 4, 96 };
+static const darwin_stat_layout DARWIN_STAT64 = { 144, 0, 8, 4, 96 };
+#else
 static const darwin_stat_layout DARWIN_STAT   = { 96,  0, 4, 8, 48 };
 static const darwin_stat_layout DARWIN_STAT64 = { 108, 0, 8, 4, 60 };
+#endif
 
 
 /* st_dev and st_ino are not decoration: SpeechDictionary's SLMMapCache keys
@@ -360,12 +365,21 @@ static void *mmap_fallback(unsigned len, int fd, unsigned off_lo)
     return p;
 }
 
+#ifdef TIGER_GUEST_64
+static void * __cdecl sh_mmap(void *addr, size_t len, int prot, int flags, int fd, uint64_t off)
+#else
 static void * __cdecl sh_mmap(void *addr, unsigned len, int prot, int flags,
                               int fd, unsigned off_lo, unsigned off_hi)
+#endif
 {
     HANDLE fh, mh;
     unsigned char *view;
+#ifndef TIGER_GUEST_64
     unsigned long long off = ((unsigned long long)off_hi << 32) | off_lo;
+#else
+    unsigned off_lo = (unsigned)off;
+    unsigned off_hi = (unsigned)(off >> 32);
+#endif
     unsigned long long aligned;
     SYSTEM_INFO si;
     unsigned slack;

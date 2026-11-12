@@ -60,7 +60,7 @@ static void enter_engine(void (__cdecl *fn)(void *), void *arg)
 static void block_invoke(void *block)
 {
     if (!block) return;
-    enter_engine((void (__cdecl *)(void *))GHOST(((gptr *)block)[3]), block);
+    enter_engine((void (__cdecl *)(void *))GHOST(((gptr *)block)[sizeof(gptr) == 8 ? 2 : 3]), block);
 }
 
 /* `Block_copy` moves a stack block to the heap so it can outlive its scope.
@@ -84,22 +84,31 @@ static void block_invoke(void *block)
  * is no Objective-C runtime here to retain with, and the engine's captures
  * are C++ pointers whose lifetimes its own code manages. */
 /* Blocks are Darwin i386 objects even when the host is AArch64. */
-struct blk_descriptor { unsigned reserved, size; gptr copy, dispose; };
+struct blk_descriptor { gptr reserved, size; gptr copy, dispose; };
+#ifdef TIGER_GUEST_64
+typedef int block_flags;
+#define BLOCK_INCREMENT(value) __atomic_add_fetch((value), 1, __ATOMIC_SEQ_CST)
+#define BLOCK_DECREMENT(value) __atomic_sub_fetch((value), 1, __ATOMIC_SEQ_CST)
+#else
+typedef glong block_flags;
+#define BLOCK_INCREMENT(value) InterlockedIncrement(value)
+#define BLOCK_DECREMENT(value) InterlockedDecrement(value)
+#endif
 struct blk_layout {
     gptr isa;
-    volatile glong flags;
+    volatile block_flags flags;
     int reserved;
     gptr invoke, descriptor;
 };
 struct blk_byref {
     gptr isa, forwarding;
-    volatile glong flags;
+    volatile block_flags flags;
     unsigned size;
     gptr keep, destroy;
 };
-typedef char blk_layout_guest_width[(sizeof(struct blk_layout) == 20) ? 1 : -1];
-typedef char blk_descriptor_guest_width[(sizeof(struct blk_descriptor) == 16) ? 1 : -1];
-typedef char blk_byref_guest_width[(sizeof(struct blk_byref) == 24) ? 1 : -1];
+typedef char blk_layout_guest_width[(sizeof(struct blk_layout) == (sizeof(gptr) == 8 ? 32 : 20)) ? 1 : -1];
+typedef char blk_descriptor_guest_width[(sizeof(struct blk_descriptor) == sizeof(gptr) * 4) ? 1 : -1];
+typedef char blk_byref_guest_width[(sizeof(struct blk_byref) == (sizeof(gptr) == 8 ? 40 : 24)) ? 1 : -1];
 
 static void block_copy_helper(gptr fn, void *dst, const void *src)
 {
@@ -124,7 +133,7 @@ static void * __cdecl sh_Block_copy(void *block)
     if (!src) return NULL;
     if (src->flags & BLK_IS_GLOBAL) return src;
     if (src->flags & BLK_NEEDS_FREE) {           /* already ours, on the heap */
-        InterlockedIncrement(&src->flags);
+        BLOCK_INCREMENT(&src->flags);
         return src;
     }
     dst = (struct blk_layout *)GMEM_ALLOC(((struct blk_descriptor *)GHOST(src->descriptor))->size);
@@ -141,7 +150,7 @@ static void __cdecl sh_Block_release(void *block)
     struct blk_layout *blk = (struct blk_layout *)block;
     if (!blk || (blk->flags & BLK_IS_GLOBAL) || !(blk->flags & BLK_NEEDS_FREE))
         return;                     /* global, stack, or not ours to free */
-    if (InterlockedDecrement(&blk->flags) & BLK_REFCOUNT_MASK)
+    if (BLOCK_DECREMENT(&blk->flags) & BLK_REFCOUNT_MASK)
         return;
     if (blk->flags & BLK_HAS_COPY_DISPOSE)
         enter_engine((void (__cdecl *)(void *))GHOST(((struct blk_descriptor *)GHOST(blk->descriptor))->dispose), blk);
@@ -156,7 +165,7 @@ static void __cdecl sh_Block_object_assign(void *destAddr, const void *object,
         struct blk_byref *src = (struct blk_byref *)GHOST(((struct blk_byref *)object)->forwarding);
         struct blk_byref *heap;
         if (src->flags & BLK_NEEDS_FREE) {
-            InterlockedIncrement(&src->flags);
+            BLOCK_INCREMENT(&src->flags);
             /* destAddr is a variable inside the guest's block: four bytes. */
             *(gptr *)destAddr = GP(src);
             break;
@@ -189,7 +198,7 @@ static void __cdecl sh_Block_object_dispose(const void *object, int flags)
     case BLK_FIELD_IS_BYREF: {
         struct blk_byref *b = (struct blk_byref *)GHOST(((struct blk_byref *)object)->forwarding);
         if (!(b->flags & BLK_NEEDS_FREE)) return;
-        if (InterlockedDecrement(&b->flags) & BLK_REFCOUNT_MASK) return;
+        if (BLOCK_DECREMENT(&b->flags) & BLK_REFCOUNT_MASK) return;
         if (b->flags & BLK_HAS_COPY_DISPOSE)
             enter_engine((void (__cdecl *)(void *))GHOST(b->destroy), b);
         GMEM_FREE(b);
@@ -785,7 +794,7 @@ static unsigned __int64 __cdecl sh_dispatch_walltime(void *when, __int64 delta)
      * with `gettimeofday`, so it has to be the one it gets back here too. */
     unsigned __int64 base;
     if (when) {
-        const unsigned *ts = (const unsigned *)when;   /* i386: sec, nsec */
+        const gptr *ts = (const gptr *)when;
         base = (unsigned __int64)ts[0] * 1000000000ULL + ts[1];
     } else {
         base = wall_us_scaled() * 1000ULL;

@@ -10,8 +10,8 @@
 #include <float.h>
 #include <limits.h>
 static void __cdecl sh_sgemm(int order, int ta, int tb, int m, int n, int k,
-                            unsigned alphabits, const float *a, int lda,
-                            const float *b, int ldb, unsigned betabits,
+                            guest_float alphabits, const float *a, int lda,
+                            const float *b, int ldb, guest_float betabits,
                             float *c, int ldc)
 {
     int i, j, h;

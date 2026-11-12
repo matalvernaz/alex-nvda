@@ -60,6 +60,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <ctype.h>
+#include <stdint.h>
 /* malloc.h, for the one question the guest's allocator has to ask the host's:
  * how large a block really is (_msize / malloc_usable_size), so that a
  * realloc fills what it grew by and not one byte more.  Not in the C
@@ -82,10 +83,17 @@
 /* ---- Mach-O, only the parts used here ---------------------------------- */
 
 #define FAT_CIGAM       0xbebafeca      /* fat header is big-endian */
+#ifdef TIGER_GUEST_64
+#define MH_MAGIC        0xfeedfacf
+#define CPU_TYPE_X86    0x01000007
+#define LC_SEGMENT      0x19
+typedef uint64_t guest_address;
+#else
 #define MH_MAGIC        0xfeedface
 #define CPU_TYPE_X86    7
-
 #define LC_SEGMENT      0x1
+typedef unsigned guest_address;
+#endif
 #define LC_SYMTAB       0x2
 #define LC_DYSYMTAB     0xb
 
@@ -123,14 +131,23 @@
 
 #pragma pack(push, 1)
 typedef struct { unsigned magic, cputype, cpusubtype, filetype, ncmds,
-                          sizeofcmds, flags; } mach_header;
+                          sizeofcmds, flags;
+#ifdef TIGER_GUEST_64
+                 unsigned reserved;
+#endif
+               } mach_header;
 typedef struct { unsigned cmd, cmdsize; } load_command;
 typedef struct { unsigned cmd, cmdsize; char segname[16];
-                 unsigned vmaddr, vmsize, fileoff, filesize;
+                 guest_address vmaddr, vmsize, fileoff, filesize;
                  unsigned maxprot, initprot, nsects, flags; } segment_command;
 typedef struct { char sectname[16], segname[16];
-                 unsigned addr, size, offset, align, reloff, nreloc, flags,
-                          reserved1, reserved2; } section;
+                 guest_address addr, size;
+                 unsigned offset, align, reloff, nreloc, flags,
+                          reserved1, reserved2;
+#ifdef TIGER_GUEST_64
+                 unsigned reserved3;
+#endif
+               } section;
 typedef struct { unsigned cmd, cmdsize, symoff, nsyms, stroff, strsize; }
         symtab_command;
 typedef struct { unsigned cmd, cmdsize;
@@ -141,7 +158,7 @@ typedef struct { unsigned cmd, cmdsize;
                           extreloff, nextrel, locreloff, nlocrel; }
         dysymtab_command;
 typedef struct { unsigned n_strx; unsigned char n_type, n_sect;
-                 short n_desc; unsigned n_value; } nlist;
+                 short n_desc; guest_address n_value; } nlist;
 typedef struct { int r_address; unsigned r_info; } reloc;
 typedef struct { unsigned cmd, cmdsize;
                  unsigned rebase_off, rebase_size, bind_off, bind_size,
@@ -155,9 +172,9 @@ typedef struct {
     const char      *path;
     unsigned char   *file;      /* whole file, as read */
     unsigned char   *slice;     /* start of the i386 slice */
-    unsigned         lo, hi;    /* vmaddr range of the image */
-    unsigned         data_vmaddr;/* first writable segment; split-seg reloc base */
-    unsigned         slide;     /* add to any vmaddr to get a real address */
+    guest_address    lo, hi;    /* vmaddr range of the image */
+    guest_address    data_vmaddr;/* first writable segment; split-seg reloc base */
+    guest_address    slide;     /* add to any vmaddr to get a real address */
     const nlist     *syms;
     unsigned         nsyms;
     const char      *strs;
@@ -169,9 +186,14 @@ typedef struct {
      * __PAGEZERO and any with vmsize 0, which nothing else here cares about.
      * Filtering this list the way `sects` is filtered would shift every index
      * after the first skipped segment and land each fixup in the wrong place. */
-    unsigned         segaddr[16];
+    guest_address    segaddr[16];
     int              nsegs;
     const dyld_info_command *info;  /* NULL for Tiger and Leopard */
+#ifdef TIGER_GUEST_64
+    size_t           slice_size;
+    unsigned         fixups_offset, fixups_size;
+    unsigned         exports_offset, exports_size;
+#endif
 } image;
 
 /* Storage the guest must be able to hold or dereference.
@@ -257,11 +279,16 @@ typedef struct {
  * On a 32-bit host `gptr` is exactly as wide as a pointer and every macro
  * below is the identity, so the shipping ARMv7 build cannot change behaviour.
  */
+#ifdef TIGER_GUEST_64
+typedef uint64_t gptr;
+typedef int64_t glong;
+#else
 typedef unsigned gptr;          /* a pointer as the guest holds it: 4 bytes */
 #ifdef _WIN32
 typedef LONG     glong;         /* Win32 atomics require LONG pointers; Darwin i386 long is also four bytes. */
 #else
 typedef int      glong;         /* the guest's `long`, likewise: 4 bytes    */
+#endif
 #endif
 
 #if GUEST_LOW
@@ -311,12 +338,18 @@ static unsigned gp_check(const void *p, const char *file, int line)
  * So the shims that take a float by value take its BITS instead, and say so
  * in their parameter names.  Reinterpret, never convert: `(float)bits` would
  * turn the pattern into the number it spells. */
-static float GFLOAT(unsigned bits)
+#ifdef TIGER_GUEST_64
+typedef float guest_float;
+static float GFLOAT(guest_float value) { return value; }
+#else
+typedef unsigned guest_float;
+static float GFLOAT(guest_float bits)
 {
     float f;
     memcpy(&f, &bits, sizeof f);
     return f;
 }
+#endif
 
 /* A 64-bit value the guest passed BY VALUE, as the two words it pushed.
  *
@@ -573,6 +606,9 @@ static unsigned bswap(unsigned v)
 #endif
 #include "tiger_host_shims.c"
 #include "tiger_host_cf.c"
+#ifdef TIGER_GUEST_64
+#include "propertylist.c"
+#endif
 #include "tiger_host_files.c"
 #include "tiger_host_audio.c"
 #ifdef TIGER_NO_AAC
@@ -584,14 +620,21 @@ static unsigned bswap(unsigned v)
 #include "tiger_host_cxx.c"
 #include "tiger_host_accel.c"
 #include "tiger_host_linalg.c"
+#ifdef TIGER_GUEST_64
+#include "dispatch.c"
+#endif
 #include "tiger_host_sqlite.c"
 #include "tiger_host_regex.c"
 #include "tiger_host_numbers.c"
 #include "tiger_host_shimtab.c"
 #include "tiger_host_fault.c"
 #include "tiger_host_sllog.c"
+#ifdef TIGER_GUEST_64
+#include "macho64.c"
+#else
 #include "tiger_host_macho.c"
 #include "tiger_host_dyldinfo.c"
+#endif
 #include "tiger_host_speech.c"
 #include "tiger_host_volume.c"
 #include "tiger_host_markers.c"

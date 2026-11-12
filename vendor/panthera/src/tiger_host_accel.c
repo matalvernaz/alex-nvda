@@ -33,7 +33,11 @@
  */
 
 typedef glong         vdsp_stride;
+#ifdef TIGER_GUEST_64
+typedef uint64_t      vdsp_length;
+#else
 typedef unsigned      vdsp_length;
+#endif
 
 /* vDSP_svemg(A, IA, C, N): *C = sum of |A[n]|.
  *
@@ -277,7 +281,7 @@ static void __cdecl sh_vDSP_hann_window(float *C, vdsp_length N, int flag)
 
 /* lrintf: round to nearest, ties to even, which is what the default rounding
  * mode gives. Reached twice, so nothing here is worth optimising. */
-static long __cdecl sh_lrintf(unsigned xbits)
+static long __cdecl sh_lrintf(guest_float xbits)
 {
     double d = (double)GFLOAT(xbits);
     double r = floor(d + 0.5);
@@ -308,7 +312,7 @@ static long __cdecl sh_lrintf(unsigned xbits)
 /* A DSPSplitComplex is two pointers: the reals and the imaginaries kept apart
  * rather than interleaved, so each can be walked with its own stride. */
 typedef struct { gptr realp, imagp; } split_complex;
-typedef char split_complex_guest_width[(sizeof(split_complex) == 8) ? 1 : -1];
+typedef char split_complex_guest_width[(sizeof(split_complex) == sizeof(gptr) * 2) ? 1 : -1];
 
 #define FFT_FORWARD  1
 #define FFT_INVERSE (-1)
@@ -748,7 +752,7 @@ static void __cdecl sh_vDSP_vramp(const float *A, const float *B,
 
 /* catlas_sset(N, alpha, X, incX): fill.  The BLAS-adjacent spelling Apple
  * ships rather than a vDSP one. */
-static void __cdecl sh_catlas_sset(int N, unsigned alphabits, float *X, int incX)
+static void __cdecl sh_catlas_sset(int N, guest_float alphabits, float *X, int incX)
 {
     float alpha = GFLOAT(alphabits);
     int n;

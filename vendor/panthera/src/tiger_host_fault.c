@@ -425,7 +425,11 @@ static LONG CALLBACK on_fault(EXCEPTION_POINTERS *ep)
  */
 static unsigned char *g_thunks;
 static int g_nthunks;
+#ifdef TIGER_GUEST_64
+#define THUNK_SZ 32
+#else
 #define THUNK_SZ 16
+#endif
 
 static void *make_thunk(const char *name)
 {
@@ -437,6 +441,20 @@ static void *make_thunk(const char *name)
      * records the miss and answers 0, the way the native thunk does. */
     (void)idx;
     return uc_missing_tramp(name);
+#elif defined(TIGER_GUEST_64)
+    {
+        unsigned char *code = g_thunks + (size_t)g_nthunks * THUNK_SZ;
+        code[0] = 0xbf;
+        memcpy(code + 1, &idx, 4);
+        code[5] = 0x48;
+        code[6] = 0xb8;
+        uintptr_t target = (uintptr_t)shim_missing;
+        memcpy(code + 7, &target, 8);
+        code[15] = 0xff;
+        code[16] = 0xe0;
+        g_nthunks++;
+        return code;
+    }
 #else
     {
         unsigned char *t = g_thunks + (size_t)g_nthunks * THUNK_SZ;

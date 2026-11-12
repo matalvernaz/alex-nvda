@@ -4,6 +4,8 @@ Use Apple's downloadable macOS Alex voice in NVDA. The add-on downloads and prep
 
 This is an experimental build. It uses Alex 2.0.36 from Apple's macOS voice catalog with the Mac OS X Lion engine and a compatibility layer derived from [Panthera Speech](https://github.com/tgeczy/panthera-speech). It does not run the current macOS speech engine, and identical pronunciation and timing to current macOS have not been established.
 
+A separate [64-bit engine prototype](modern/README.md) can render Alex with MacinTalk 9.2.22 and its matching dictionary on Linux. It is not included in the released NVDA add-on.
+
 ## Install and set up
 
 1. Install the `.nvda-addon` file and restart NVDA.
