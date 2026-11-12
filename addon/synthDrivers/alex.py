@@ -27,4 +27,5 @@ class SynthDriver(pantheradriver.PantheraDriver):
 	def __init__(self):
 		if not tree.usable():
 			raise RuntimeError("Alex is not set up. Open NVDA Settings, Alex, and download the required files.")
+		self.TREE = tree.selected_tree()
 		super().__init__()

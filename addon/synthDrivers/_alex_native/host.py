@@ -851,7 +851,11 @@ class HostMixin(object):
             log.debug("%s: " % self.name + "utterance -> host %d: %r"
                       % (proc.pid, text[:60]))
             v = voice.encode("utf-8")
-            t = _encode(text)
+            if getattr(self.TREE, "TEXT_ENCODING", None) == "utf-8":
+                from .unicode_text import encode_modern
+                t = encode_modern(text)
+            else:
+                t = _encode(text)
             # A cancel that arrived while nothing was rendering must not be
             # waiting here to kill the utterance that follows it.
             self._clearCancel()

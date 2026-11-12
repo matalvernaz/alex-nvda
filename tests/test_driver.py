@@ -41,7 +41,7 @@ class DriverTests(unittest.TestCase):
 			(root / "current.json").write_text('{"format": 1, "directory": "install-test"}')
 			host = root / "test-host.exe"
 			host.write_bytes(b"synthetic fixture")
-			with patch.object(paths, "data_root", return_value=root), patch.object(tree, "HOST_EXE", str(host)):
+			with patch.object(paths, "data_root", return_value=root), patch.object(paths, "HOST_EXE", host):
 				self.assertTrue(alex.SynthDriver.check())
 				driver = alex.SynthDriver()
 				try:

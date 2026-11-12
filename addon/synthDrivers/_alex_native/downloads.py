@@ -48,6 +48,7 @@ class Download:
 	algorithm: str
 	digest: str
 	filename: str
+	label: str = ""
 
 
 LION = Download(LION_URL, LION_SIZE, "sha256", LION_SHA256, "lion.dmg")
@@ -92,7 +93,7 @@ def fetch(download, cache, progress, cancel, opener=open_apple):
 	destination = cache / download.filename
 	partial = cache / (download.filename + ".partial")
 	def verification_progress(stage, percent, detail):
-		name = "the speech engine" if download == LION else "Alex"
+		name = download.label or ("the speech engine" if download == LION else "Alex")
 		progress("Checking " + name, percent, "Verifying the downloaded file")
 	if destination.exists():
 		if destination.stat().st_size == download.size and hash_file(destination, download.algorithm, cancel, verification_progress) == download.digest:
@@ -128,7 +129,8 @@ def fetch(download, cache, progress, cancel, opener=open_apple):
 							target.write(chunk)
 							completed += len(chunk)
 							message = f"{completed / 1024 / 1024:.0f} of {download.size / 1024 / 1024:.0f} MB"
-							progress("Downloading " + ("the speech engine" if download == LION else "Alex"), completed * 100 // download.size, message)
+							name = download.label or ("the speech engine" if download == LION else "Alex")
+							progress("Downloading " + name, completed * 100 // download.size, message)
 			if partial.stat().st_size != download.size:
 				raise OSError("Apple's download ended before the file was complete.")
 			if hash_file(partial, download.algorithm, cancel, verification_progress) != download.digest:

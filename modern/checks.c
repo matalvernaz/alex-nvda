@@ -39,6 +39,20 @@ int main(void) {
 	if (modern_semaphore_wait(semaphore, 0) != 0) { return 23; }
 	CloseHandle(semaphore);
 	if (timeline_check()) { return 24; }
+	cfobj *unicode = modern_text("caf\xc3\xa9 \xf0\x9f\x98\x80");
+	uint16_t characters[7];
+	if (modern_string_length(unicode) != 7) { return 25; }
+	modern_string_characters(unicode, 0, 7, characters);
+	if (characters[3] != 0xe9 || characters[5] != 0xd83d || characters[6] != 0xde00) { return 26; }
+	cfobj *copy = modern_string_copy(NULL, unicode);
+	if (strcmp(cf_cstr(copy), "caf\xc3\xa9 \xf0\x9f\x98\x80")) { return 27; }
+	cfobj *suffix = modern_text(" again");
+	modern_string_append(copy, suffix);
+	if (modern_string_length(copy) != 13 || strcmp(cf_cstr(copy), "caf\xc3\xa9 \xf0\x9f\x98\x80 again")) { return 28; }
+	if (!modern_contains_emoji(unicode) || modern_contains_emoji(modern_text("caf\xc3\xa9"))) { return 29; }
+	char formatted[128];
+	sh_sprintf(formatted, "%s %ld %.1f", "64-bit", (glong)12345678901LL, 1.5);
+	if (strcmp(formatted, "64-bit 12345678901 1.5")) { return 30; }
 	fprintf(stdout, "PASS modern property lists, constants, ASCII emoji check, semaphore timeout/signal and 64-bit audio timeline\n");
 	return 0;
 }

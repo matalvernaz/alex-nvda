@@ -1,7 +1,6 @@
 """Download, extract and test Alex before atomically making the installation available to NVDA."""
 
 import array
-import json
 import os
 from pathlib import Path
 import shutil
@@ -85,7 +84,21 @@ def probe(tree, root, cancel, command=None):
 	audio.unlink()
 
 
-def install(root, progress, cancel, probe_command=None, keep_downloads=False):
+def clear_downloads(root):
+	"""Remove only setup's cache, never an installed engine or its voice data."""
+	cache = Path(root) / "cache"
+	if cache.is_symlink() or cache.resolve().parent != Path(root).resolve():
+		raise ValueError("The Alex download cache is outside its data folder.")
+	if cache.exists():
+		shutil.rmtree(cache)
+
+
+def install(root, progress, cancel, probe_command=None, keep_downloads=False, engine="legacy"):
+	if engine == "modern":
+		from . import modern_setup
+		return modern_setup.install(root, progress, cancel, probe_command, keep_downloads)
+	if engine != "legacy":
+		raise ValueError("Choose Modern or Legacy for the Alex engine.")
 	root = Path(root)
 	root.mkdir(parents=True, exist_ok=True)
 	with InstallationLock(root):
@@ -111,6 +124,8 @@ def install(root, progress, cancel, probe_command=None, keep_downloads=False):
 		try:
 			apple.extract_engine(engine_archive, staging, progress, cancel)
 			version = apple.extract_alex(voice_archive, staging, progress, cancel)
+			from .modern_setup import share_voice_bank
+			bank_digest = share_voice_bank(root, staging, voice, cancel)
 			if not paths.complete_tree(staging):
 				raise RuntimeError("The downloaded installer is missing required speech components. Please retry setup.")
 			progress("Testing Alex", 0, "Checking that the downloaded voice produces real speech")
@@ -123,11 +138,10 @@ def install(root, progress, cancel, probe_command=None, keep_downloads=False):
 				"engine": "Mac OS X Lion 10.7",
 				"voice_url": voice.url,
 				"voice_digest": voice.digest,
+				"voice_bank_sha256": bank_digest,
 				"engine_sha256": downloads.LION_SHA256,
 			}
-			pending = root / "current.json.pending"
-			pending.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
-			pending.replace(root / "current.json")
+			state = paths.publish_installation(root, "legacy", state)
 			committed = True
 		finally:
 			if not committed:

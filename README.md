@@ -1,59 +1,67 @@
 # Alex for NVDA
 
-Use Apple's downloadable macOS Alex voice in NVDA. The add-on downloads and prepares the required files directly from Apple, with progress and cancellation. You do not need a Mac, an installer image, Python, or an Apple account.
+Use Apple's downloadable macOS Alex voice in NVDA. Setup downloads and prepares the required files directly from Apple, with progress and cancellation. You do not need a Mac, Python, an installer image, or an Apple account.
 
-This is an experimental build. It uses Alex 2.0.36 from Apple's macOS voice catalog with the Mac OS X Lion engine and a compatibility layer derived from [Panthera Speech](https://github.com/tgeczy/panthera-speech). It does not run the current macOS speech engine, and identical pronunciation and timing to current macOS have not been established.
+Version 0.2.0 adds the modern Intel MacinTalk 9.2.22 engine and matching SpeechDictionary 9.0.4 from macOS Sonoma 14.8.9. The legacy Lion engine remains available. Both use the downloadable Alex 2.0.36 voice. This is an experimental compatibility port, not a claim of complete macOS API or pronunciation parity.
 
-A separate [64-bit engine prototype](modern/README.md) can render Alex with MacinTalk 9.2.22 and its matching dictionary on Linux. It is not included in the released NVDA add-on.
+## Install or update
 
-## Install and set up
+1. Install the `.nvda-addon` file and restart NVDA. It updates the existing Alex add-on; downloaded voices are kept.
+2. Open NVDA Settings, Alex, or Tools, Alex setup.
+3. Choose Modern or Legacy (Lion). Existing version 0.1.0 data is recognized as Legacy.
+4. Switch to another synthesizer while running setup. Press Download and set up Alex. Setup verifies the downloads, extracts the components, and tests actual speech before selecting the installation.
+5. When the status says Ready, press Use Alex.
 
-1. Install the `.nvda-addon` file and restart NVDA.
-2. Open NVDA Settings and choose **Alex**, or open **Tools → Alex setup**.
-3. Press **Download and set up Alex**. Setup downloads the engine installer and the voice directly from Apple's servers, verifies them, extracts the required files, and tests that Alex produces audio.
-4. When the status says **Ready**, press **Use Alex**. You can also select **Alex (Apple download)** in NVDA's Synthesizer dialog.
+Modern requires 64-bit Windows 10/11 with working Windows ICU and SQLite services. NVDA itself can be 32-bit. Setup checks these services before starting the large download. Legacy remains available on systems that cannot run the modern host. NVDA 2024.1 or later is required. Secure desktop and Windows sign-in speech are not included.
 
-Setup downloads about 5.6 GB and needs about 8 GB free while working. The installed speech data takes about 1 GB. The large downloads are removed after successful setup. No installer scripts or Apple executables are launched during extraction.
+Modern setup downloads about 14.5 GB and needs about 22 GB of temporary free space. Legacy downloads about 5.6 GB and needs about 8 GB temporarily. Each installation uses about 1 GB afterward, mostly Alex's recordings. Setup shares identical recordings through a hard link when the filesystem supports it; deleting either engine keeps the other's copy working.
 
-Setup runs in the background. You can close Settings and reopen it to check progress. The status, progress bar and buttons are standard Windows controls. NVDA announces setup phases and download milestones.
+Setup runs in the background. Close Settings and reopen it to check progress. Standard Windows controls show status and progress; NVDA announces phases and download milestones. Cancel keeps partial downloads. Retry resumes them. Failed setup leaves the current installation in place.
 
-Cancel keeps partial downloads, so pressing Download again continues them. A failed download or speech test leaves an existing installation in place. To repair Alex, switch to another synthesizer first, then run setup again.
+## Manage downloaded data
 
-## Where files live
+The engine selector shows which engines are installed and which one Alex uses. Choose an installed engine and press Use Alex to switch. Merely changing the selector does not change speech.
 
-Apple's files are stored in the `alex` folder inside your NVDA user configuration, outside the add-on. Updating the add-on preserves them. Temporary downloads are stored there too. Setup diagnostics are in `alex/logs/setup-test.log`.
+Remove selected engine's data deletes that engine and keeps the other installation. Switch to another synthesizer first. Deleting the active installation selects the remaining engine for the next time Alex starts. Repairs replace the selected engine's older data after the new installation passes its test.
 
-No Apple engines, voice recordings, installers, dictionaries, generated Apple machine code, or test audio belong in this repository, its Git history, CI artifacts, or releases. The add-on contains only original/MIT code, the native host compiled from that code, and license notices. The packaging tool rejects unapproved files and Apple binary formats. CI builds without downloading any Apple components.
+Successful setup removes its installer archives and temporary extracted files. Check Keep downloads after successful setup to retain them for repairs. Delete saved downloads removes the setup cache, including partial downloads, while keeping installed engines. No cleanup starts automatically when updating the add-on.
 
-## Validation status
+## Modern text handling
 
-- The actual Apple Alex download and installer have been downloaded and extracted locally.
-- Real synthesis has been exercised through the i386 Linux build of the same host under QEMU, including the silent-start regression that was fixed during development.
-- The packaged Windows host is cross-compiled with MinGW and includes the Glint AAC decoder.
-- The actual Windows executable has synthesized non-silent Alex speech locally under Wine/QEMU. This caught and fixed a Windows callback-stack alignment fault that compilation alone did not detect.
-- The actual NVDA speech pipeline has been driven against the real engine with NVDA API test doubles: streamed audio, cancellation, replacement speech, rate changes and positioned reading markers were exercised. These checks do not replace an NVDA listening test.
-- GitHub builds and executes the native host's data-free checks on Windows, including temporary-file handling and stack alignment. Its setup tests use synthetic fixtures only; no Apple files are fetched in CI.
-- Windows/NVDA playback, accessible control behavior and rapid navigation still require testing on Windows. Linux tests and NVDA API test doubles cannot establish those behaviors.
+The modern path preserves UTF-8 text and uses UTF-16 for CoreFoundation strings rather than folding input into MacRoman. Alex remains an English voice; preserving characters does not make it multilingual.
 
-The first release is a test build, not a claim that those Windows checks have passed. The add-on targets NVDA 2024.1 and later on Windows 10/11. Sign-in and secure-desktop use are not included in this build.
+Emoji sequences, including joined emoji and country flags, are expanded into English names from Unicode CLDR 46 before synthesis. Apple's private CoreEmoji framework is not ported. Native macOS emoji descriptions may differ.
+
+## Files and diagnostics
+
+Apple's data lives in `alex` inside the NVDA user configuration, outside the add-on. Updates preserve it. `alex/logs/setup-test.log` records the installation speech test, and `alex/logs/modern-setup.log` records runtime and dictionary preparation errors. Setup failures and host errors also go into NVDA's log. Nothing is uploaded automatically.
+
+No Apple engines, installers, dictionaries, cache files, voice recordings, generated bindings or test audio may be stored in Git history, releases, CI artifacts, or hosted CI. The add-on includes our compiled compatibility hosts, open-source runtimes, Unicode data, Python code and license notices. Packaging explicitly allows only the legacy executable, modern executable, and its two open-source C++ runtime DLLs. It refuses other binaries and Apple Mach-O formats. CI never downloads Apple components.
+
+## Validation
+
+The modern Windows executable has produced speech under isolated Wine/QEMU with components extracted by the add-on's own preparation code. Local checks cover accented input, emoji names, modern dictionary extraction, version 0.1.0 migration, switching engines, shared recordings and download cleanup. These checks use local Apple downloads that are never uploaded.
+
+The [modern engine notes](modern/README.md) record comparisons against native macOS. Speech timing and pronunciation differ for some passages. Actual NVDA playback, audio-device behavior and rapid navigation still need Windows listening tests; API test doubles and Wine cannot establish those behaviors.
+
+Hosted CI builds both Windows executables and runs data-free runtime checks on Windows. Python setup and archive tests use small, original synthetic fixtures.
 
 ## Build
 
-On Debian/Ubuntu with Python 3, Git and the i686 MinGW C/C++ toolchain:
+On Debian/Ubuntu, install Python 3.11 or later, Git, Make, and the i686 and x86_64 MinGW GCC toolchains. The legacy host also needs i686 MinGW G++.
 
-```
-git clone https://github.com/CrispStrobe/glint.git build-glint
+```sh
+git clone --no-checkout https://github.com/CrispStrobe/glint.git build-glint
 python3 tools/build_host.py --glint-source build-glint
+python3 tools/build_modern.py --glint-source build-glint
 python3 -m unittest discover -s tests -v
 python3 tools/package.py
 ```
 
-The builder exports a pinned Glint commit and applies Panthera's decoder patches. The package is written to `dist/alex-0.1.0.nvda-addon`. Building never needs an Apple component. A separate `--target linux` build is available for local synthesis validation with an i686 Linux cross-compiler.
+The modern builder downloads SHA-256-pinned LLVM-MinGW and a pinned Capstone checkout. All compilation is sequential. On Windows, run the legacy builder from an MSYS2 MINGW32 environment and the modern builder from MINGW64; see `.github/workflows/build.yml` for compiler options. Build output goes to `dist/alex-0.2.0.nvda-addon`. No Apple component is needed for building or packaging.
 
-## Credits and changes to Panthera
+## Credits
 
-The Mach-O loader, macOS API compatibility code, speech pipeline, markers, text handling and disk-image reader come from Tamas Geczy's MIT-licensed Panthera Speech, pinned at `7b93500091924b779f9d6f8b482563096b0b705a`. Its license is preserved under `vendor/panthera/LICENSE` and in the add-on.
+The compatibility layer and speech driver derive from Tamas Geczy's MIT-licensed [Panthera Speech](https://github.com/tgeczy/panthera-speech), pinned at `7b93500091924b779f9d6f8b482563096b0b705a`. Glint's AAC decoder by CrispStrobe is pinned at `77738f3ed9b15f627196cc5bbd7f6406814ba2fb` and compiled into both hosts.
 
-The setup interface, Apple-only downloader, nested installer reader, transactional installation, speech health check and separate Alex driver are additions here. Native changes make the host compile with MinGW, preserve thread-local state, explicitly align Win32 callbacks for Darwin, use the user's temporary directory for the setup test, and wait for Lion's completion signal instead of treating a cold voice's startup silence as completed speech.
-
-Glint is by CrispStrobe, pinned at `77738f3ed9b15f627196cc5bbd7f6406814ba2fb`, MIT licensed. Its code is fetched only while building and compiled into the host. Its notice and the compiler runtime notices accompany the add-on. Apple's files are not covered by these projects' licenses.
+The modern host uses LLVM-MinGW's libc++ and libunwind, plus statically linked Capstone 5.0.6 for local instruction decoding during setup. Emoji labels come from the English annotations in [Unicode CLDR 46](https://github.com/unicode-org/cldr/tree/release-46/common), revision `e1d37acce5dae468c414172be53b666d58d45be8`, under the Unicode License v3. Corresponding license notices accompany the add-on. Apple's files are not covered by these licenses.

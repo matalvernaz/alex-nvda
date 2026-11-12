@@ -6,21 +6,20 @@ typedef struct {
 	int failed;
 } property_reader;
 
-static const unsigned short *modern_string_characters_pointer(const void *string) {
-	// CoreFoundation permits NULL here for strings whose storage is not contiguous UTF-16; the caller then uses GetCharacters.
-	(void)string;
-	return NULL;
-}
-
-static int modern_contains_emoji(const void *string) {
-	const char *text = cf_cstr(string);
-	if (!text) { die("emoji detection received an invalid string"); }
-	for (const unsigned char *character = (const unsigned char *)text; *character; character++) {
-		if (*character >= 0x80) {
-			die("the modern prototype currently supports ASCII comparisons only; Unicode emoji handling is not ported");
+static int __cdecl modern_contains_emoji(const void *string) {
+	size_t length;
+	int owned;
+	uint16_t *units = modern_units(string, &length, &owned);
+	int found = 0;
+	for (size_t index = 0; index < length; index++) {
+		unsigned value = units[index];
+		if (value >= 0xd800 && value <= 0xdbff && index + 1 < length && units[index + 1] >= 0xdc00 && units[index + 1] <= 0xdfff) {
+			value = 0x10000 + ((value - 0xd800) << 10) + units[++index] - 0xdc00;
 		}
+		if ((value >= 0x1f000 && value <= 0x1faff) || (value >= 0x2600 && value <= 0x27bf)) { found = 1; break; }
 	}
-	return 0;
+	if (owned) { free(units); }
+	return found;
 }
 
 static void *modern_foundation_constant(const char *name) {
@@ -222,7 +221,7 @@ static cfobj *property_value(property_reader *reader) {
 	return value;
 }
 
-static void *sh_CFPropertyListCreateFromXMLData(void *allocator, const void *data, glong options, gptr *error) {
+static void *__cdecl sh_CFPropertyListCreateFromXMLData(void *allocator, const void *data, glong options, gptr *error) {
 	(void)allocator;
 	(void)options;
 	if (error) { *error = 0; }
@@ -253,21 +252,21 @@ static void *sh_CFPropertyListCreateFromXMLData(void *allocator, const void *dat
 	return value;
 }
 
-static void *sh_CFReadStreamCreateWithFile(void *allocator, const void *url) {
+static void *__cdecl sh_CFReadStreamCreateWithFile(void *allocator, const void *url) {
 	(void)allocator;
 	const char *path = cf_cstr(url);
 	return path ? cf_data(path) : NULL;
 }
 
-static int sh_CFReadStreamOpen(const void *stream) {
+static int __cdecl sh_CFReadStreamOpen(const void *stream) {
 	return cf_ours(stream) && ((const cfobj *)stream)->kind == CF_DATA;
 }
 
-static void sh_CFReadStreamClose(void *stream) {
+static void __cdecl sh_CFReadStreamClose(void *stream) {
 	(void)stream;
 }
 
-static void *sh_CFPropertyListCreateWithStream(void *allocator, const void *stream, glong length, glong options, glong *format, gptr *error) {
+static void *__cdecl sh_CFPropertyListCreateWithStream(void *allocator, const void *stream, glong length, glong options, glong *format, gptr *error) {
 	if (length < 0 || !sh_CFReadStreamOpen(stream)) {
 		return NULL;
 	}
@@ -276,6 +275,6 @@ static void *sh_CFPropertyListCreateWithStream(void *allocator, const void *stre
 	return result;
 }
 
-static void *sh_CFPropertyListCreateWithData(void *allocator, const void *data, glong options, glong *format, gptr *error) {
+static void *__cdecl sh_CFPropertyListCreateWithData(void *allocator, const void *data, glong options, glong *format, gptr *error) {
 	return sh_CFPropertyListCreateWithStream(allocator, data, 0, options, format, error);
 }

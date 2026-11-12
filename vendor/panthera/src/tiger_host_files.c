@@ -474,6 +474,16 @@ static int * __cdecl sh_error(void) { return g_errno_storage; }
 
 static int __cdecl sh_fprintf(void *f, const char *fmt, ...)
 {
+#ifdef TIGER_GUEST_64
+    GUEST_VA_LIST arguments;
+    char output[4096];
+    (void)f;
+    GUEST_VA_START(arguments, fmt);
+    int count = modern_vformat(output, sizeof output, fmt, arguments);
+    GUEST_VA_END(arguments);
+    fprintf(stderr, "  [engine] %s", output);
+    return count;
+#else
     va_list ap; int n;
     (void)f;
     va_start(ap, fmt);
@@ -481,6 +491,7 @@ static int __cdecl sh_fprintf(void *f, const char *fmt, ...)
     n = vfprintf(stderr, fmt, ap);
     va_end(ap);
     return n;
+#endif
 }
 /* ---- printf, at the guest's widths ------------------------------------- *
  *
@@ -644,6 +655,7 @@ static int guest_format(char *out, size_t cap, const char *fmt,
 #define GUEST_VA_WORDS(a0,a1,a2,a3,a4,a5,a6,a7,a8,a9) \
     { (a0),(a1),(a2),(a3),(a4),(a5),(a6),(a7),(a8),(a9) }
 
+#ifndef TIGER_GUEST_64
 static int __cdecl sh_printf(const char *fmt,
                              unsigned a0, unsigned a1, unsigned a2,
                              unsigned a3, unsigned a4, unsigned a5,
@@ -685,3 +697,27 @@ static int __cdecl sh_vsprintf(char *buf, const char *fmt, gptr ap)
     if (g_verbose) printf("  [engine vsprintf] %s\n", buf ? buf : "(null)");
     return n;
 }
+#else
+static int __cdecl sh_printf(const char *format, ...)
+{
+    char output[4096];
+    GUEST_VA_LIST arguments;
+    GUEST_VA_START(arguments, format);
+    int count = modern_vformat(output, sizeof output, format, arguments);
+    GUEST_VA_END(arguments);
+    fprintf(stderr, "  [engine] %s", output);
+    return count;
+}
+static int __cdecl sh_puts(const char *text)
+{ return fprintf(stderr, "  [engine] %s\n", text ? text : "(null)"); }
+static int __cdecl sh_sprintf(char *output, const char *format, ...)
+{
+    GUEST_VA_LIST arguments;
+    GUEST_VA_START(arguments, format);
+    int count = modern_vformat(output, SIZE_MAX, format, arguments);
+    GUEST_VA_END(arguments);
+    return count;
+}
+static int __cdecl sh_vsprintf(char *output, const char *format, gptr arguments)
+{ return modern_vformat(output, SIZE_MAX, format, (void *)GHOST(arguments)); }
+#endif

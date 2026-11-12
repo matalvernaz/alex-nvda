@@ -6,10 +6,22 @@
 typedef struct { const char *name; void *fn; } shim;
 static const shim g_shims[] = {
 #ifdef TIGER_GUEST_64
+	{ "_CFStringCreateWithCharactersNoCopy", (void *)modern_string_from_characters },
+	{ "_CFStringCreateCopy", (void *)modern_string_copy },
+	{ "_CFStringGetLength", (void *)modern_string_length },
+	{ "_CFStringGetCharacters", (void *)modern_string_characters },
+	{ "_CFStringGetCharactersPtr", (void *)modern_string_pointer },
+	{ "_CFStringGetCharacterAtIndex", (void *)modern_string_character },
+	{ "_CFStringCreateMutable", (void *)modern_string_mutable },
+	{ "_CFStringCreateMutableCopy", (void *)modern_string_mutable_copy },
+	{ "_CFStringAppend", (void *)modern_string_append },
+	{ "_CFStringAppendCharacters", (void *)modern_string_append_characters },
+	{ "_CFStringInsert", (void *)modern_string_insert },
+	{ "_CFStringReplace", (void *)modern_string_replace },
+	{ "_os_log_type_enabled", (void *)modern_log_enabled },
     { "_sinhf", (void *)sinhf },
     { "_pthread_cond_broadcast", (void *)modern_condition_broadcast },
     { "_CEMStringContainsEmoji", (void *)modern_contains_emoji },
-    { "_CFStringGetCharactersPtr", (void *)modern_string_characters_pointer },
     { "_AudioComponentCount", (void *)modern_audio_component_count },
     { "_dispatch_workloop_create_inactive", (void *)modern_workloop_create },
     { "_dispatch_workloop_set_scheduler_priority", (void *)modern_workloop_priority },

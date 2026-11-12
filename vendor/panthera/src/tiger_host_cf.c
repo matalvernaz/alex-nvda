@@ -340,6 +340,9 @@ static void   __cdecl sh_CFRelease(void *o)
                 GMEM_FREE(co->bytes);
             }
             GMEM_FREE(co->big);
+#ifdef TIGER_GUEST_64
+            if (co->kind == CF_STRING && co->macroman == 2) GMEM_FREE(co->bytes);
+#endif
         }
         GMEM_FREE(old);
     }
@@ -800,17 +803,17 @@ static void * __cdecl sh_CFStringCreateWithFormat(void *alloc, void *opts,
     const char *f = cf_cstr(format);
     char out[CFPATH];
     unsigned n = 0;
-    va_list ap;
+    GUEST_VA_LIST ap;
 
     (void)alloc; (void)opts;
     if (!f) return NULL;
-    va_start(ap, format);
+    GUEST_VA_START(ap, format);
     while (*f && n + 1 < CFPATH) {
         if (*f != '%') { out[n++] = *f++; continue; }
         f++;
         if (*f == '%') { out[n++] = *f++; continue; }
         if (*f == '@') {
-            const char *s = cf_cstr(va_arg(ap, const void *));
+            const char *s = cf_cstr(GUEST_VA_ARG(ap, const void *));
             f++;
             if (!s) s = "(null)";
             while (*s && n + 1 < CFPATH) out[n++] = *s++;
@@ -818,10 +821,10 @@ static void * __cdecl sh_CFStringCreateWithFormat(void *alloc, void *opts,
         }
         printf("  [cf] CFStringCreateWithFormat: unsupported conversion "
                "%%%c in \"%s\"\n", *f ? *f : '?', cf_cstr(format));
-        va_end(ap);
+        GUEST_VA_END(ap);
         return NULL;
     }
-    va_end(ap);
+    GUEST_VA_END(ap);
     out[n] = '\0';
     return cf_new(out);
 }

@@ -15,6 +15,7 @@ PCMWave
 VoiceDescription
 *.wav
 /addon/synthDrivers/_alex_native/alex_host.exe
+/addon/synthDrivers/_alex_native/modern_runtime/
 /build-glint/
 /PROGRESS.md
 /NUL

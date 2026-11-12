@@ -188,6 +188,10 @@ static void map_image(image *component) {
 }
 
 static void *lookup_shim(const char *name) {
+#ifdef _WIN64
+	void *windows_function = modern_windows_symbol(name);
+	if (windows_function) { return windows_function; }
+#endif
 	for (unsigned index = 0; g_shims[index].name; index++) {
 		if (!strcmp(g_shims[index].name, name)) {
 			return g_shims[index].fn;
@@ -198,6 +202,7 @@ static void *lookup_shim(const char *name) {
 	if (constant) {
 		return constant;
 	}
+#ifndef _WIN64
 	if (!strcmp(name, "_uiter_setString") || !strcmp(name, "_unorm_next") || !strcmp(name, "_u_charName") || !strcmp(name, "_u_isgraph")) {
 		static void *unicode;
 		if (!unicode) { unicode = dlopen("libicuuc.so.76", RTLD_NOW | RTLD_LOCAL); }
@@ -237,6 +242,7 @@ static void *lookup_shim(const char *name) {
 			}
 		}
 	}
+#endif
 	const char *suffix = strchr(name, '$');
 	if (suffix && (size_t)(suffix - name) < 128) {
 		char base[128];
@@ -304,6 +310,7 @@ static void modern_bind_cached(image *component) {
 		fingerprint = (fingerprint ^ component->file[index]) * 1099511628211ULL;
 	}
 	if (fingerprint != expected_fingerprint) { die("cached bindings belong to a different component"); }
+	if (g_verbose) { printf("  cached component fingerprint verified\n"); }
 	unsigned external_slots = 0;
 	while (fgets(line, sizeof(line), binding_file)) {
 		int metadata = line[0] == '@';
@@ -311,6 +318,7 @@ static void modern_bind_cached(image *component) {
 			die("invalid cached binding record");
 		}
 		char *owned_name = strdup(symbol_name);
+		if (g_verbose) { printf("  binding cached symbol %s\n", symbol_name); }
 		uint64_t replacement = (uintptr_t)modern_symbol(component, owned_name);
 		if (metadata) {
 			if (count >= 1024) { die("too many cached external symbols"); }
@@ -611,7 +619,7 @@ static void run_initializers(image *component) {
 		if ((item->flags & 0xff) == S_MOD_INIT_FUNC) {
 			uint64_t *functions = (uint64_t *)(item->addr + component->slide);
 			for (uint64_t function_index = 0; function_index < item->size / 8; function_index++) {
-				((void (*)(void))(uintptr_t)functions[function_index])();
+				((void (__cdecl *)(void))(uintptr_t)functions[function_index])();
 			}
 		}
 	}

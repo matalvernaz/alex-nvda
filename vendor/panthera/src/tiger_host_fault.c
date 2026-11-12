@@ -7,11 +7,12 @@
  * table -- these are unstripped bundles with C++ names in them -- so a fault
  * can name the function it happened in rather than only the file.  Linear over
  * a few thousand symbols, which is free at the one moment it runs. */
-static const char *nearest_symbol(const image *im, unsigned addr,
-                                  unsigned *symaddr)
+static const char *nearest_symbol(const image *im, guest_address addr,
+                                  guest_address *symaddr)
 {
     const char *best = NULL;
-    unsigned bestaddr = 0, k;
+    guest_address bestaddr = 0;
+    unsigned k;
     for (k = 0; k < im->nsyms; k++) {
         const nlist *sy = &im->syms[k];
         if (sy->n_type & N_STAB) continue;
@@ -48,11 +49,11 @@ static int    g_nimages;
 static const char *engine_symbol(void *addr)
 {
     static char buf[192];
-    unsigned v = (unsigned)addr;
+    guest_address v = (guest_address)(uintptr_t)addr;
     int i;
     for (i = 0; i < g_nimages; i++) {
         image *im = g_images[i];
-        unsigned off, symaddr = 0;
+        guest_address off, symaddr = 0;
         const char *sym, *base;
         if (v < im->lo + im->slide || v >= im->hi + im->slide) continue;
         off = v - im->slide;
@@ -60,10 +61,10 @@ static const char *engine_symbol(void *addr)
         base = strrchr(im->path, 0x2f);
         if (!base) base = im->path; else base++;
         if (sym)
-            _snprintf(buf, sizeof(buf) - 1, "%s + 0x%x  (%s)",
-                      sym, off - symaddr, base);
+            _snprintf(buf, sizeof(buf) - 1, "%s + 0x%llx  (%s)",
+                      sym, (unsigned long long)(off - symaddr), base);
         else
-            _snprintf(buf, sizeof(buf) - 1, "%s + 0x%x", base, off);
+            _snprintf(buf, sizeof(buf) - 1, "%s + 0x%llx", base, (unsigned long long)off);
         buf[sizeof(buf) - 1] = 0;
         return buf;
     }
@@ -93,7 +94,15 @@ static int native_fault_in_guest(uintptr_t pc)
     return 0;
 }
 #endif
-#ifdef _WIN32
+#if defined(_WIN64) && defined(TIGER_GUEST_64)
+static LONG WINAPI on_fault(EXCEPTION_POINTERS *exception)
+{
+    fprintf(stderr, "alex_host: exception 0x%08lx at %p, address %p\n", exception->ExceptionRecord->ExceptionCode, (void *)(uintptr_t)exception->ContextRecord->Rip, (void *)(uintptr_t)exception->ExceptionRecord->ExceptionInformation[1]);
+    fflush(stderr);
+    ExitProcess(3);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+#elif defined(_WIN32)
 /* ---- surviving the engine's own divide by zero ------------------------- */
 /*
  * MacinTalk 3 divides by (index2 - index1) when interpolating segment

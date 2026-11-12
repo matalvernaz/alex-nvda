@@ -1,42 +1,49 @@
 // Supply the workloop and semaphore operations added by newer MacinTalk releases.
-static int modern_condition_broadcast(cnd *condition) {
+static int __cdecl modern_log_enabled(const void *log, unsigned char type) {
+	// Apple's optional unified logger has no enabled destinations in this host; our own diagnostics go to NVDA's log.
+	(void)log;
+	(void)type;
+	return 0;
+}
+
+static int __cdecl modern_condition_broadcast(cnd *condition) {
 	if (!condition) { return 22; }
 	WakeAllConditionVariable(cnd_native(condition));
 	return 0;
 }
 
-static unsigned modern_audio_component_count(const unsigned *description) {
+static unsigned __cdecl modern_audio_component_count(const unsigned *description) {
 	// AudioConverter is backed by the bundled Glint AAC decoder, so the engine need not register Apple's codec component.
 	return description && description[0] == 0x61646563 && description[1] == 0x61616320 ? 1 : 0;
 }
 
-static void *modern_workloop_create(const char *label) {
+static void *__cdecl modern_workloop_create(const char *label) {
 	return sh_dispatch_queue_create(label, NULL);
 }
 
-static void modern_workloop_priority(void *queue, int priority, unsigned flags) {
+static void __cdecl modern_workloop_priority(void *queue, int priority, unsigned flags) {
 	(void)queue;
 	(void)priority;
 	(void)flags;
 }
 
-static void modern_dispatch_qos(void *queue, unsigned quality, int priority) {
+static void __cdecl modern_dispatch_qos(void *queue, unsigned quality, int priority) {
 	(void)queue;
 	(void)quality;
 	(void)priority;
 }
 
-static void *modern_semaphore_create(glong value) {
+static void *__cdecl modern_semaphore_create(glong value) {
 	if (value < 0 || value > INT_MAX) { return NULL; }
 	return CreateSemaphoreA(NULL, value, INT_MAX, NULL);
 }
 
-static glong modern_semaphore_signal(void *semaphore) {
+static glong __cdecl modern_semaphore_signal(void *semaphore) {
 	if (!ReleaseSemaphore(semaphore, 1, NULL)) { die("cannot signal speech semaphore"); }
 	return 0;
 }
 
-static glong modern_semaphore_wait(void *semaphore, uint64_t deadline) {
+static glong __cdecl modern_semaphore_wait(void *semaphore, uint64_t deadline) {
 	DWORD wait = INFINITE;
 	if (deadline != UINT64_MAX && deadline != INT64_MAX) {
 		uint64_t now = GetTickCount64() * 1000000ULL;
@@ -70,7 +77,7 @@ static DWORD WINAPI modern_after_thread(void *context) {
 	return 0;
 }
 
-static void modern_dispatch_after(uint64_t deadline, void *queue, void *block) {
+static void __cdecl modern_dispatch_after(uint64_t deadline, void *queue, void *block) {
 	modern_after *request = malloc(sizeof(*request));
 	if (!request) { die("cannot allocate deferred speech work"); }
 	request->deadline = deadline;

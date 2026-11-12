@@ -66,6 +66,9 @@
  * realloc fills what it grew by and not one byte more.  Not in the C
  * standard; present on all three toolchains this builds with. */
 #include <malloc.h>
+#if defined(TIGER_GUEST_64) && defined(_WIN64)
+#include "windows_abi.h"
+#endif
 
 /* The in-process synthesis API the Android JNI layer calls -- declared up here
  * so main()'s --jni-check sees the prototypes; defined at the end of the TU
@@ -238,7 +241,7 @@ typedef struct {
  * storage, in a table keyed by guest address, on any host where they will not
  * fit -- and the static asserts further down stay exactly where they are, as
  * the tripwire that caught this. */
-#if GUEST_LOW || defined(__GLIBC__)
+#if GUEST_LOW || defined(__GLIBC__) || defined(TIGER_GUEST_64)
 #define GUEST_SYNC_SIDE 1
 #else
 #define GUEST_SYNC_SIDE 0
@@ -387,6 +390,13 @@ static float GFLOAT(guest_float bits)
 #define GMEM_ALLOC(n)       calloc(1, (n))
 #define GMEM_REALLOC(p, n)  realloc((p), (n))
 #define GMEM_FREE(p)        free((void *)(p))
+#endif
+
+#ifndef GUEST_VA_LIST
+#define GUEST_VA_LIST va_list
+#define GUEST_VA_START va_start
+#define GUEST_VA_END va_end
+#define GUEST_VA_ARG va_arg
 #endif
 
 /* ---- shared state ------------------------------------------------------ */
@@ -607,7 +617,9 @@ static unsigned bswap(unsigned v)
 #include "tiger_host_shims.c"
 #include "tiger_host_cf.c"
 #ifdef TIGER_GUEST_64
+#include "unicode.c"
 #include "propertylist.c"
+#include "format64.c"
 #endif
 #include "tiger_host_files.c"
 #include "tiger_host_audio.c"
@@ -627,10 +639,16 @@ static unsigned bswap(unsigned v)
 #include "tiger_host_regex.c"
 #include "tiger_host_numbers.c"
 #include "tiger_host_shimtab.c"
+#if defined(TIGER_GUEST_64) && defined(_WIN64)
+#include "windows.c"
+#endif
 #include "tiger_host_fault.c"
 #include "tiger_host_sllog.c"
 #ifdef TIGER_GUEST_64
 #include "macho64.c"
+#ifdef TIGER_CACHE_SCAN
+#include "cache_scan.c"
+#endif
 #else
 #include "tiger_host_macho.c"
 #include "tiger_host_dyldinfo.c"
@@ -880,6 +898,12 @@ static int host_open(const char *mtpath, const char *sdpath)
 
 int main(int argc, char **argv)
 {
+#if defined(TIGER_GUEST_64) && defined(_WIN64)
+    if (argc == 2 && !strcmp(argv[1], "--modern-runtime-check")) return modern_windows_runtime_check();
+#endif
+#ifdef TIGER_CACHE_SCAN
+    if (argc == 4 && !strcmp(argv[1], "--scan-cache-rip")) return modern_scan_cache(argv[2], argv[3]);
+#endif
     int err, i;
     /* The VoiceSpec the engine is told to use.  It falls back to Fred --
      * 'mtk3' 1, the voice everyone means -- but only when the voice bundle

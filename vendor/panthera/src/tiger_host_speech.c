@@ -193,7 +193,12 @@ static int speak_text(const speech_api *a, void *chan,
          * utterance and this host renders one and exits, or serves and
          * reuses. Releasing it here would be a use-after-free with a very
          * long fuse. */
+#ifdef TIGER_GUEST_64
+        cfobj *s = modern_text(text);
+#else
         cfobj *s = cf_text(text);
+#endif
+        if (!s) return -50;
         return call_aligned3((void *)a->cfstring, chan, s, (void *)0);
     }
 }

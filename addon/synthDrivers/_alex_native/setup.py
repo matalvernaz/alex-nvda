@@ -4,7 +4,7 @@ from dataclasses import dataclass, replace
 import threading
 import time
 
-from . import apple, installer
+from . import apple, installer, paths
 
 
 @dataclass(frozen=True)
@@ -54,18 +54,18 @@ class SetupController:
 		self._last_update = now
 		self._publish(SetupState(stage, max(0, min(100, percent)), detail, True))
 
-	def start(self, root):
+	def start(self, root, engine="legacy", keep_downloads=False):
 		if self._thread is not None and self._thread.is_alive():
 			return False
 		self._cancel.clear()
 		self._publish(SetupState("Starting setup", running=True))
-		self._thread = threading.Thread(target=self._run, args=(root,), name="Alex setup", daemon=True)
+		self._thread = threading.Thread(target=self._run, args=(root, engine, keep_downloads), name="Alex setup", daemon=True)
 		self._thread.start()
 		return True
 
-	def _run(self, root):
+	def _run(self, root, engine="legacy", keep_downloads=False):
 		try:
-			installer.install(root, self._progress, self._cancel)
+			installer.install(root, self._progress, self._cancel, engine=engine, keep_downloads=keep_downloads)
 		except apple.Cancelled:
 			self._publish(SetupState("Cancelled", detail="Downloads are kept. Press Download and set up Alex to continue."))
 		except Exception as error:
@@ -77,6 +77,32 @@ class SetupController:
 			self._publish(SetupState("Setup failed", detail=str(error), error=True))
 		else:
 			self._publish(SetupState("Ready", 100, "Alex is ready. Press Use Alex, or choose Alex in NVDA's Synthesizer dialog."))
+
+	def remove(self, root, engine=None):
+		"""Delete selected data in the background, under the same lock as setup."""
+		if self._thread is not None and self._thread.is_alive():
+			return False
+		self._publish(SetupState("Removing data", detail="Waiting for files to close.", running=True))
+		self._thread = threading.Thread(target=self._remove, args=(root, engine), name="Alex data cleanup", daemon=True)
+		self._thread.start()
+		return True
+
+	def _remove(self, root, engine):
+		try:
+			with installer.InstallationLock(root):
+				if engine is None:
+					installer.clear_downloads(root)
+				else:
+					paths.remove_engine(root, engine)
+		except Exception as error:
+			try:
+				from logHandler import log
+				log.error("Alex data cleanup failed", exc_info=True)
+			except ImportError:
+				pass
+			self._publish(SetupState("Could not remove data", detail=str(error), error=True))
+		else:
+			self._publish(SetupState("Data removed", detail="Your other installed engine and its voice data have been kept."))
 
 	def cancel(self):
 		self._cancel.set()

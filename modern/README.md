@@ -1,8 +1,8 @@
-# Modern engine prototype
+# Modern engine port
 
-This branch runs Apple's Intel 64-bit MacinTalk 9.2.22 with its matching SpeechDictionary 9.0.4 outside macOS. Both components were extracted locally from Apple's macOS Sonoma 14.8.9 installer. The voice bank is the same downloadable Alex 2.0.36 used by the released add-on.
+The modern backend runs Apple's Intel 64-bit MacinTalk 9.2.22 with its matching SpeechDictionary 9.0.4 outside macOS. Both components come directly from Apple's macOS Sonoma 14.8.9 installer. The voice bank is the same downloadable Alex 2.0.36 used by the legacy backend.
 
-The prototype currently runs on Linux x86_64, including under QEMU on an ARM Linux host. It is separate from the released NVDA add-on. There is no modern Windows host, modern NVDA backend, or automatic modern-component setup yet. The existing add-on continues to use Lion's engine.
+Version 0.2.0 includes a separate Windows x64 host, a UTF-8 NVDA path and automatic component preparation. The legacy host and data remain available. The Linux x86_64 host is retained for local comparisons.
 
 ## What was tested
 
@@ -24,18 +24,27 @@ The newer prototype rendered a complete greeting with a measured peak resident m
 
 ## Current limits
 
-- Comparisons accept ASCII text only. Unsupported Unicode is refused. CoreEmoji has not been ported; this build does not advertise emoji support.
+- The comparison table below was measured with ASCII passages on the Linux host. The Windows host has also rendered accented UTF-8 input and English emoji names. This does not establish pronunciation for every Unicode character.
+- CoreFoundation text is preserved as UTF-16. The NVDA frontend expands emoji using Unicode CLDR 46 English labels, rather than loading Apple's private CoreEmoji framework.
 - The private MacinTalk plug-in API and cache layouts can change between macOS releases.
-- Windows x64 uses a different calling convention. The Linux prototype does not establish Windows compatibility.
+- Windows x64 adapters translate Darwin calls into the Windows CRT, libc++, ICU and SQLite conventions. ICU and SQLite come from Windows. Two open-source LLVM-MinGW runtime DLLs accompany the host.
 - Cancellation, sustained NVDA navigation and audio-device playback have not been tested with the new backend.
-- The current preparation process uses a Mac to expand the Intel system-image patch and extract the cached dictionary. That process has not been implemented as an unattended Windows installer.
-- ICU, libc++, libc++abi, libunwind and SQLite are local Linux prototype dependencies. They are not downloaded by the released add-on.
+- C++ exception propagation through loaded Darwin machine code is unsupported. Those exceptional paths terminate the isolated host with diagnostics instead of attempting incompatible unwinding; NVDA can restart the host.
+- The full-image extraction path is pinned to the tested installer digest. Differential RIDIFF patches are refused.
 
-Do not package this backend into an NVDA release until those gaps are addressed and tested.
+Actual NVDA listening and audio-device tests remain necessary on Windows. Wine synthesis and tests with NVDA API doubles are narrower checks.
 
 ## Building without Apple files
 
-Use the same pinned Glint source checkout accepted by the main builder:
+For the packaged Windows host, use the same pinned Glint source checkout accepted by the legacy builder:
+
+```sh
+python3 tools/build_modern.py --glint-source /path/to/glint
+```
+
+This fetches SHA-256-pinned LLVM-MinGW 20261104 and Capstone 5.0.6 revision `accf4df62f1fba6f92cae692985d27063552601c`, builds serially, and copies only the host and its two C++ runtime DLLs into the add-on. GCC compiles the C calling-convention adapters, while LLVM-MinGW compiles and links the libc++ adapter. No Apple files are read while building. On Windows, use MINGW64; the legacy builder uses MINGW32.
+
+For the Linux comparison host:
 
 ```sh
 python3 modern/build.py --glint-source /path/to/glint
@@ -56,7 +65,9 @@ python3 modern/extract_payloads.py /local/update.zip /local/extracted
 
 The PBZX reader limits compressed and decompressed chunks to 64 MiB and uses an LZMA workspace limit. The disk reader reads raw and zero-filled spans in requested windows instead of materializing multi-gigabyte spans. During development, the full payload scan ran with a 512 MiB cgroup limit, swapping disabled and one CPU. The Python process used about 34 MiB of resident memory.
 
-The Intel cryptex system-image patch is separate from those payload files. `reference_image.py` invokes Apple's image patcher on macOS with one worker. Mount only the resulting local image, read-only. Extract SpeechDictionary from its Intel dyld cache with a cache extraction tool. Do not replace or modify system libraries on the Mac.
+The automatic installer reads the Intel cryptex full-image RIDIFF stream directly. Its variant stream contains the uncompressed file forks, so the add-on extracts the six cache files without reconstructing an APFS image. All six extracted files were byte-identical to a separate read-only extraction on a Mac. The direct extraction used about 33 MiB of resident memory locally. `reference_image.py` is retained only as a macOS research comparison helper, not used by setup.
+
+The original Python Mach-O exporter copies the dictionary's needed segments, removes cache slide pointers, compacts its symbol strings and reconstructs the link-edit tables. The bundled host's statically linked Capstone scanner finds RIP-relative imports. Python resolves those imports against the downloaded cache and writes fingerprinted bindings locally. Setup needs no external extraction programs or Python packages.
 
 An extracted cached library still contains references to the cache's shared import table. The following tools generate build-specific binding metadata locally:
 

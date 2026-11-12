@@ -31,6 +31,9 @@ static int cli_integer(const char *s, int lo, int hi, int *out)
  * Reject malformed UTF-8; unsupported characters become spaces with a diagnostic. */
 static char *cli_macroman(const char *input)
 {
+#ifdef TIGER_GUEST_64
+    return strdup(input);
+#else
     const unsigned char *p=(const unsigned char *)input;
     char *out=(char *)malloc(strlen(input)+1), *w=out;
     unsigned lost=0;
@@ -56,6 +59,7 @@ static char *cli_macroman(const char *input)
     return out;
 invalid:
     fprintf(stderr,"tiger_host: input must be valid UTF-8\n");free(out);return NULL;
+#endif
 }
 
 #if defined(__i386__) && defined(__GNUC__)

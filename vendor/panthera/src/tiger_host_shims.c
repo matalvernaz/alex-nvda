@@ -659,7 +659,7 @@ static int call_aligned4(void *fn, void *a, void *b, void *c, void *d)
 { return uc_call4(fn, a, b, c, d); }
 static int call_aligned5(void *fn, void *a, void *b, void *c, void *d, void *e)
 { return uc_call5(fn, a, b, c, d, e); }
-#elif defined(_WIN32) && defined(__GNUC__)
+#elif defined(_WIN32) && defined(__GNUC__) && !defined(TIGER_GUEST_64)
 /* Win32 thread callbacks can enter GCC with a four-byte-aligned stack. Realign every call into Apple's Darwin i386 code explicitly, including calls GCC would otherwise turn into tail calls. */
 #define ALIGNED_ENTER \
     "pushl %ebp\n\t" \
@@ -718,15 +718,15 @@ static __attribute__((naked, noinline)) int call_aligned5(void *fn, void *a, voi
  * faults immediately and loudly at the first worker task -- the failure this
  * whole comment block describes -- so it cannot degrade quietly. */
 static int call_aligned1(void *fn, void *a)
-{ return ((int (*)(void *))fn)(a); }
+{ return ((int (__cdecl *)(void *))fn)(a); }
 static int call_aligned2(void *fn, void *a, void *b)
-{ return ((int (*)(void *, void *))fn)(a, b); }
+{ return ((int (__cdecl *)(void *, void *))fn)(a, b); }
 static int call_aligned3(void *fn, void *a, void *b, void *c)
-{ return ((int (*)(void *, void *, void *))fn)(a, b, c); }
+{ return ((int (__cdecl *)(void *, void *, void *))fn)(a, b, c); }
 static int call_aligned4(void *fn, void *a, void *b, void *c, void *d)
-{ return ((int (*)(void *, void *, void *, void *))fn)(a, b, c, d); }
+{ return ((int (__cdecl *)(void *, void *, void *, void *))fn)(a, b, c, d); }
 static int call_aligned5(void *fn, void *a, void *b, void *c, void *d, void *e)
-{ return ((int (*)(void *, void *, void *, void *, void *))fn)(a, b, c, d, e); }
+{ return ((int (__cdecl *)(void *, void *, void *, void *, void *))fn)(a, b, c, d, e); }
 #else
 static __declspec(naked) int call_aligned1(void *fn, void *a)
 {
