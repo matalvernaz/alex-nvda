@@ -28,7 +28,7 @@ The newer prototype rendered a complete greeting with a measured peak resident m
 - CoreFoundation text is preserved as UTF-16. The NVDA frontend expands emoji using Unicode CLDR 46 English labels, rather than loading Apple's private CoreEmoji framework.
 - The private MacinTalk plug-in API and cache layouts can change between macOS releases.
 - Windows x64 adapters translate Darwin calls into the Windows CRT, libc++, ICU and SQLite conventions. ICU and SQLite come from Windows. Two open-source LLVM-MinGW runtime DLLs accompany the host.
-- Cancellation, sustained NVDA navigation and audio-device playback have not been tested with the new backend.
+- Local tests exercise incremental streaming, complete long passages, positioned markers, rate, volume and cancellation through the real driver with NVDA API test doubles. Sustained navigation and actual audio-device playback still need a Windows listening test.
 - C++ exception propagation through loaded Darwin machine code is unsupported. Those exceptional paths terminate the isolated host with diagnostics instead of attempting incompatible unwinding; NVDA can restart the host.
 - The full-image extraction path is pinned to the tested installer digest. Differential RIDIFF patches are refused.
 

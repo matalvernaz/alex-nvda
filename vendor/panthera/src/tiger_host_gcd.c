@@ -15,9 +15,10 @@
  * stage and produced a 46-byte wav -- a header and no audio, with no error
  * anywhere.
  *
- * General dispatch_async/sync still invoke the block on the calling thread;
- * callers relying on deferred block execution remain unsupported. Timer
- * sources now deliver callbacks through their serial target queue, separately
+ * The legacy host invokes general dispatch_async/sync on the calling thread.
+ * The modern host queues them on persistent workers so long utterances can
+ * return and stream audio while rendering continues. Timer
+ * sources deliver callbacks through their serial target queue, separately
  * implemented in tiger_host_gcd_queue.c. Running each timer's guest callback
  * on its own thread broke that queue's serialization and consumed a guest
  * stack per short-lived timer under emulation.
@@ -212,16 +213,29 @@ static void __cdecl sh_Block_object_dispose(const void *object, int flags)
     }
 }
 
+#ifdef TIGER_GUEST_64
+static void modern_queue_submit(void *queue, void *block,
+                                void (__cdecl *fn)(void *), void *ctx, int wait);
+#endif
+
 static void __cdecl sh_dispatch_sync(void *queue, void *block)
 {
+#ifdef TIGER_GUEST_64
+    modern_queue_submit(queue, block, NULL, NULL, 1);
+#else
     (void)queue;
     block_invoke(block);
+#endif
 }
 
 static void __cdecl sh_dispatch_async(void *queue, void *block)
 {
+#ifdef TIGER_GUEST_64
+    modern_queue_submit(queue, block, NULL, NULL, 0);
+#else
     (void)queue;
     block_invoke(block);
+#endif
 }
 
 /* `dispatch_once` with a stub predicate never ran the block at all, which is
@@ -239,15 +253,23 @@ static void __cdecl sh_dispatch_once(glong *pred, void *block)
 static void __cdecl sh_dispatch_sync_f(void *queue, void *ctx,
                                        void (__cdecl *fn)(void *))
 {
+#ifdef TIGER_GUEST_64
+    modern_queue_submit(queue, NULL, fn, ctx, 1);
+#else
     (void)queue;
     enter_engine(fn, ctx);
+#endif
 }
 
 static void __cdecl sh_dispatch_async_f(void *queue, void *ctx,
                                         void (__cdecl *fn)(void *))
 {
+#ifdef TIGER_GUEST_64
+    modern_queue_submit(queue, NULL, fn, ctx, 0);
+#else
     (void)queue;
     enter_engine(fn, ctx);
+#endif
 }
 
 /* Queues and sources are handles the engine only ever passes back to us, so
@@ -809,12 +831,31 @@ static void * __cdecl sh_dispatch_queue_create(const char *label, void *attr)
 {
     void *q = dispatch_handle();
     (void)label;
+#ifdef TIGER_GUEST_64
+    source_queue_init(q);
+#else
     if (!attr) source_queue_init(q);
+#endif
     return q;
 }
 
 static void * __cdecl sh_dispatch_get_global_queue(long pri, unsigned long f)
-{ (void)pri; (void)f; return dispatch_handle(); }
+{
+    (void)pri; (void)f;
+#ifdef TIGER_GUEST_64
+    static void *queue;
+    static volatile LONG initializing;
+    while (InterlockedExchange(&initializing, 1)) Sleep(0);
+    if (!queue) {
+        queue = dispatch_handle();
+        source_queue_init(queue);
+    }
+    InterlockedExchange(&initializing, 0);
+    return queue;
+#else
+    return dispatch_handle();
+#endif
+}
 
 static void __cdecl sh_dispatch_release(void *o) { (void)o; }
 static void __cdecl sh_dispatch_retain(void *o)  { (void)o; }

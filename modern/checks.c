@@ -10,6 +10,62 @@ static cfobj *parse_xml(const char *text) {
 	return value;
 }
 
+typedef struct {
+	HANDLE entered, release;
+	volatile LONG timed_out;
+	int value, order;
+} queue_check;
+
+static void __cdecl queue_hold(void *argument) {
+	queue_check *check = argument;
+	SetEvent(check->entered);
+	if (WaitForSingleObject(check->release, 2000) != WAIT_OBJECT_0) {
+		InterlockedExchange(&check->timed_out, 1);
+	}
+	check->order = 1;
+}
+
+typedef struct {
+	struct blk_layout header;
+	queue_check *check;
+	int captured;
+} check_block;
+
+static void __cdecl queue_captured(void *argument) {
+	check_block *block = argument;
+	block->check->value = block->captured;
+	block->check->order = block->check->order == 1 ? 2 : -1;
+}
+
+static void __cdecl queue_barrier(void *argument) {
+	queue_check *check = argument;
+	check->order = check->order == 2 ? 3 : -1;
+}
+
+static int queue_check_run(void) {
+	queue_check check = {0};
+	check.entered = CreateEvent(NULL, FALSE, FALSE, NULL);
+	check.release = CreateEvent(NULL, FALSE, FALSE, NULL);
+	void *queue = sh_dispatch_queue_create("test.serial", NULL);
+	struct blk_descriptor descriptor = {0};
+	descriptor.size = sizeof(check_block);
+	check_block block = {0};
+	block.header.invoke = GP(queue_captured);
+	block.header.descriptor = GP(&descriptor);
+	block.check = &check;
+	block.captured = 42;
+	sh_dispatch_async_f(queue, &check, queue_hold);
+	if (WaitForSingleObject(check.entered, 2000) != WAIT_OBJECT_0 || check.timed_out) { return 1; }
+	sh_dispatch_async(queue, &block);
+	block.captured = 99;
+	SetEvent(check.release);
+	sh_dispatch_sync_f(queue, &check, queue_barrier);
+	CloseHandle(check.entered);
+	CloseHandle(check.release);
+	if (check.timed_out || check.order != 3 || check.value != 42) { return 2; }
+	return 0;
+}
+
 int main(void) {
 #ifdef _WIN64
 	if (modern_windows_runtime_check()) { return 31; }
@@ -56,6 +112,7 @@ int main(void) {
 	char formatted[128];
 	sh_sprintf(formatted, "%s %ld %.1f", "64-bit", (glong)12345678901LL, 1.5);
 	if (strcmp(formatted, "64-bit 12345678901 1.5")) { return 30; }
-	fprintf(stdout, "PASS modern property lists, constants, ASCII emoji check, semaphore timeout/signal and 64-bit audio timeline\n");
+	if (queue_check_run()) { return 32; }
+	fprintf(stdout, "PASS modern property lists, Unicode strings, semaphore, queued block lifetime/order and 64-bit audio timeline\n");
 	return 0;
 }

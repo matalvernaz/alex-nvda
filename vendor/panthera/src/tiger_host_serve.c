@@ -667,7 +667,13 @@ static int serve(image *mt, void *chan, const char *voicesdir)
         if (!err) {
             unsigned last = 0, quiet = 0, ticks = 0;
             /* Lion signals completion by arming its deferred stop. Its one-frame startup kick is not speech; a cold Alex bank can still be selecting units after 300 ms. */
-            while (!g_stopped && (api.cfstring ? !g_defer_arm : quiet < 30) && ticks < 900) {
+            while (!g_stopped && (api.cfstring ? !g_defer_arm : quiet < 30) && ticks <
+#ifdef TIGER_GUEST_64
+                   4500
+#else
+                   900
+#endif
+            ) {
                 Sleep(10); ticks++;
                 /* **10.7 does signal the end of an utterance, and this is
                  * it.**  It never calls `AUGraphStop` -- 0 times in 96 -- so
@@ -781,7 +787,13 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                     cancelled = 1;
                     break;
                 }
-                if (g_slices != last) { last = g_slices; quiet = 0; }
+                if (g_slices != last) { last = g_slices; quiet = 0;
+#ifdef TIGER_GUEST_64
+                    /* Modern dispatch returns before synthesis finishes. Bound
+                     * stalls, not the total time spent producing a long passage. */
+                    ticks = 0;
+#endif
+                }
                 else quiet++;
                 /* Send what has settled, every tick.  The engine runs at about
                  * ninety times real time, so after the first chunk there are
@@ -803,6 +815,9 @@ static int serve(image *mt, void *chan, const char *voicesdir)
                         sent = stream_chunk(sent, g_pcm_n - STREAM_LOOKBEHIND);
                 }
             }
+#ifdef TIGER_GUEST_64
+            if (ticks >= 4500) die("modern speech stalled for 45 seconds; restarting the host is required");
+#endif
             if (g_float_stats)
                 fprintf(stderr, "  [au] the engine armed its deferred "
                                 "graph stop %u time(s); the wait ran %u "

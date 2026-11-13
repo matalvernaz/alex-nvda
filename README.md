@@ -40,7 +40,7 @@ No Apple engines, installers, dictionaries, cache files, voice recordings, gener
 
 ## Validation
 
-The modern Windows executable has produced speech under isolated Wine/QEMU with components extracted by the add-on's own preparation code. Local checks cover accented input, emoji names, modern dictionary extraction, version 0.1.0 migration, switching engines, shared recordings and download cleanup. These checks use local Apple downloads that are never uploaded.
+The modern Windows executable has produced speech under isolated Wine/QEMU with components extracted by the add-on's own preparation code. Local checks cover accented input, emoji names, modern dictionary extraction, version 0.1.0 migration, switching engines, shared recordings and download cleanup. Streaming tests check complete long passages, reading markers, rate, volume and interrupted speech through the real driver with NVDA API doubles. These checks use local Apple downloads that are never uploaded.
 
 The [modern engine notes](modern/README.md) record comparisons against native macOS. Speech timing and pronunciation differ for some passages. Actual NVDA playback, audio-device behavior and rapid navigation still need Windows listening tests; API test doubles and Wine cannot establish those behaviors.
 
