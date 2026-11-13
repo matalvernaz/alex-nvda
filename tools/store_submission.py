@@ -19,6 +19,12 @@ def prepare(package, publisher="Matthew Alvernaz", channel="beta"):
 		if archive.getinfo("manifest.ini").file_size > 65536:
 			raise ValueError("Unexpectedly large add-on manifest.")
 		manifest = archive.read("manifest.ini").decode("utf-8")
+		license_info = archive.getinfo("licenses/LICENSE")
+		if license_info.file_size > 65536:
+			raise ValueError("Unexpectedly large add-on license notice.")
+		license_text = archive.read(license_info).decode("utf-8")
+		if "SPDX-License-Identifier: GPL-2.0-or-later" not in license_text or "GNU GENERAL PUBLIC LICENSE" not in license_text:
+			raise ValueError("This package needs the updated GPL license notices. Build a new release before submitting it.")
 	name = re.search(r"^name\s*=\s*([A-Za-z0-9_-]+)\s*$", manifest, re.MULTILINE)
 	version = re.search(r"^version\s*=\s*(\d+\.\d+(?:\.\d+)?)\s*$", manifest, re.MULTILINE)
 	if name is None or name[1] != "alex" or version is None:
@@ -31,7 +37,7 @@ def prepare(package, publisher="Matthew Alvernaz", channel="beta"):
 		"source-url": ("Source URL", f"{base}/tree/v{version[1]}"),
 		"publisher": ("Publisher", publisher),
 		"channel": ("Channel", channel),
-		"license-name": ("License Name", "MIT; bundled third-party notices included"),
+		"license-name": ("License Name", "GPL-2.0-or-later; separate component licenses included"),
 		"license-url": ("License URL", f"{base}/blob/v{version[1]}/LICENSE"),
 	}
 	body = "\n\n".join(f"### {label}\n\n{value}" for label, value in fields.values()) + "\n"

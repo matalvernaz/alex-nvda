@@ -65,7 +65,7 @@ def main():
 	version = next(line.split("=", 1)[1].strip() for line in manifest.splitlines() if line.startswith("version ="))
 	output = ROOT / "dist" / ("alex-" + version + ".nvda-addon")
 	output.parent.mkdir(exist_ok=True)
-	notices = [ROOT / "LICENSE"]
+	notices = [ROOT / "LICENSE", ROOT / "licenses/Alex-MIT.txt"]
 	notices += [ROOT / "vendor/panthera/licenses" / name for name in ("Panthera-MIT.txt", "Glint-MIT.txt", "GCC-runtime-exception.txt", "GCC-GPL-3.0.txt", "libstdc++-notice.txt", "LLVM-MinGW.txt", "Capstone.txt", "Capstone-LLVM.txt", "Unicode-3.0.txt")]
 	with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
 		for relative, path in files:

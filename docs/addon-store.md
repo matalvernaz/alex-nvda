@@ -1,50 +1,47 @@
-# Native NVDA add-on updates
+# Alex updates through NVDA
 
-Alex uses the normal NVDA add-on identity, `alex`, and a numeric version. NVDA's built-in updater matches that identity against its Add-on Store catalog. It does not poll this repository's GitHub releases. The existing `updateChannel = None` manifest entry is not a switch for the native updater; NVDA's Store settings choose the channel.
+Alex is being submitted to the beta channel of NVDA's Add-on Store. Submission does not mean it has been accepted. You can check the [submission and any replies](https://github.com/nvaccess/addon-datastore/issues?q=is%3Aissue+author%3Amatalvernaz+Alex).
 
-## Register this add-on
+## Getting updates
 
-The current repository is private. The Add-on Store needs a publicly downloadable add-on and accessible source for review. Making the repository public and submitting the registration are separate publication steps. Preparing the submission below does neither.
+Once Alex is accepted, NVDA can check for updates and install them through the Add-on Store. A GitHub release on its own does not make an update appear there.
 
-### Submission review, 2026-11-13
+If you installed Alex from a downloaded file, open the Add-on Store and set Alex's update channel to Beta or Any. You can also install the Store copy once it is available. Your chosen NVDA update settings still apply.
 
-Registration has not been submitted. The existing 0.2.1 preparation output is a draft, not a compliance check. Its MIT license field reflects the current package; do not relabel that immutable release as GPL without correcting the actual distribution.
+Voice and speech engine files are kept outside the add-on. Updating Alex preserves them, so you do not need to run the large downloads again.
 
-Two licensing questions need separate treatment:
+## Licensing
 
-- [NVDA's plugin and driver exception](https://github.com/nvaccess/nvda/blob/master/copying.txt#non-gpl-components-in-plugins-and-drivers) requires GPL version 2 or later for the NVDA integration, while allowing separately licensed synthesizer components. Our current root license and packaged project notice are MIT only. A corrected distribution can retain the upstream MIT notices and license independent native components separately.
-- [Apple's Sonoma license](https://www.apple.com/legal/sla/docs/macOSSonoma.pdf), sections 2F and 2J, restricts voice use and use of the software on non-Apple computers. Apple-only downloads avoid our redistribution of those files; they do not themselves establish permission to run the extracted engine on Windows. No separate permission has been established in this review. This is not a determination of enforceability or an NV Access rejection.
+Version 0.2.2 includes the GNU General Public License, version 2 or later, for the NVDA add-on code. The separate compatibility programs and build tools keep their MIT license. The original Panthera Speech and other component notices are included too. Earlier releases have not been changed.
 
-Comparable projects exist. [ClassicVoices for NVDA](https://github.com/Levi-Gobin/classicvoices/blob/main/nvda/README.md) downloads Apple firmware and voices after installation. [Panthera Speech](https://github.com/tgeczy/panthera-speech) runs Apple's older MacinTalk engines, including Alex, on Windows and excludes Apple data. [outspoken-nvda](https://github.com/tgeczy/outspoken-nvda) similarly requires users to supply old Macintosh speech engines. These projects establish technical and distribution precedent, not permission from Apple.
+[NVDA's license](https://github.com/nvaccess/nvda/blob/master/copying.txt#non-gpl-components-in-plugins-and-drivers) allows a driver to use a separately licensed speech engine. That permission does not change the speech engine's own terms.
 
-The Store's 616 add-on IDs, `submitters.json`, and issue searches contained no registration for those three projects when checked. Therefore Store acceptance of this Apple-engine approach remains unconfirmed. [Tiflotecnia Voices](https://github.com/nvaccess/addon-datastore/blob/master/addons/tiflotecniaVoices/4.2.1.json) is an accepted proprietary-synthesizer example, but explicitly requires a voice license and does not establish permission for Apple's engines.
+Apple's engine and voice are not included in the add-on or its GitHub repository. Setup downloads them directly from Apple. [Apple's Sonoma license](https://www.apple.com/legal/sla/docs/macOSSonoma.pdf), sections 2F and 2J, restricts voice use and use on non-Apple computers. Direct downloads do not themselves establish permission to run the extracted engine on Windows. No separate permission has been established in this review.
 
-The ID `alex` and version `0.2.1` meet the published format rules; `2024.1.0` and `2026.1.0` are recognized, nonexperimental API versions in the current catalog. Public anonymous downloads cannot be verified while the repository remains private. First-time publisher approval, automatic validation and the Store's malware scan remain outstanding. No assumption about the outcome of manual review is made.
+## Similar projects
+
+[ClassicVoices for NVDA](https://github.com/Levi-Gobin/classicvoices/blob/main/nvda/README.md) also downloads Apple firmware and voices after installation. [Panthera Speech](https://github.com/tgeczy/panthera-speech) runs older MacinTalk engines, including Alex, on Windows without distributing Apple's files. [outspoken-nvda](https://github.com/tgeczy/outspoken-nvda) uses speech engines supplied by the user.
+
+No Store registration for those projects was found when checked on November 13, 2026. Their existence does not establish Store acceptance or permission from Apple. The Store does list [Tiflotecnia Voices](https://github.com/nvaccess/addon-datastore/blob/master/addons/tiflotecniaVoices/4.2.1.json), which uses a proprietary speech engine and explicitly requires a voice license.
+
+## Preparing future submissions
+
+This section is for maintainers. Use the same add-on ID, `alex`, and a higher version number for each update. The Store needs a public HTTPS download and a link to the matching source. Each submitted download must continue to return the same file.
 
 After publishing a checked release, run:
 
 ```sh
-python3 tools/store_submission.py dist/alex-0.2.1.nvda-addon --channel beta
+python3 tools/store_submission.py dist/alex-0.2.2.nvda-addon --channel beta --verify-public
 ```
 
-This writes the exact issue-form fields to `dist/alex-0.2.1-store-submission.md` and prints a prefilled official registration-form link. The download and source URLs are pinned to the release tag. The submission contains no Apple components or locally generated bindings.
+The tool checks the package's identity and license notice, writes the registration fields to `dist/alex-0.2.2-store-submission.md`, and prints the official form link. It also downloads the release without a GitHub token and compares its checksum. It does not publish or submit anything, and it cannot decide whether the downloaded Apple components may be used.
 
-Once the source and release are public, verify that an anonymous download returns the same add-on:
+Submit the form to `nvaccess/addon-datastore`. First-time publisher approval can take up to two weeks. The Store also validates the metadata and scans the add-on for malware. Keep experimental releases in the beta channel.
 
-```sh
-python3 tools/store_submission.py dist/alex-0.2.1.nvda-addon --channel beta --verify-public
-```
-
-Submit the prepared form to `nvaccess/addon-datastore`. A first submission requires approval from NV Access's review team, which can take up to two weeks. Future versions also need a Store submission; publishing a GitHub release alone does not update the catalog. Use the same ID, `alex`, and an increasing version for each release. Keep experimental releases in the beta channel until Windows testing supports a stable release.
-
-## Existing manual installations
-
-After the Store accepts Alex, a manually installed copy may still have its update channel set to Same, meaning External. In NVDA's Add-on Store, choose the appropriate update channel for Alex, such as Beta or Any, or install the Store version once. NVDA then handles checks, notifications, verified downloads and installation using its normal update preference. Do not change the user's global Store settings or write NVDA's private metadata files from this add-on.
-
-Downloaded Apple engine and voice files remain in the shared NVDA configuration directory, outside the add-on. Native add-on updates preserve them and do not repeat engine setup.
+Do not change the user's global Store settings or NVDA's private metadata files from this add-on.
 
 ## Official references
 
-- [NV Access submission guide](https://github.com/nvaccess/addon-datastore/blob/master/docs/submitters/submissionGuide.md)
-- [Official registration form](https://github.com/nvaccess/addon-datastore/issues/new?template=registerAddon.yml)
-- [NVDA update-channel implementation](https://github.com/nvaccess/nvda/blob/master/source/addonStore/models/channel.py)
+- [Submission guide](https://github.com/nvaccess/addon-datastore/blob/master/docs/submitters/submissionGuide.md)
+- [Registration form](https://github.com/nvaccess/addon-datastore/issues/new?template=registerAddon.yml)
+- [NVDA update channels](https://github.com/nvaccess/nvda/blob/master/source/addonStore/models/channel.py)

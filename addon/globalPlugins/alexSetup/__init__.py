@@ -1,4 +1,5 @@
 """Provide an accessible Alex download and setup page in NVDA Settings and the Tools menu."""
+# SPDX-License-Identifier: GPL-2.0-or-later
 
 import addonHandler
 import globalPluginHandler

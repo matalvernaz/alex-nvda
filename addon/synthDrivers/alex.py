@@ -1,4 +1,5 @@
 """Make Apple's downloaded Alex voice available as a separate NVDA synthesizer."""
+# SPDX-License-Identifier: GPL-2.0-or-later
 
 import addonHandler
 from gettext import gettext as _

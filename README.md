@@ -1,12 +1,12 @@
 # Alex for NVDA
 
-Use Apple's downloadable macOS Alex voice in NVDA. Setup downloads and prepares the required files directly from Apple, with progress and cancellation. You do not need a Mac, Python, an installer image, or an Apple account.
+Use Apple's Alex voice with NVDA. After installing the add-on, open NVDA Settings, Alex, or Tools, Alex setup, to download the voice and set it up. The files come directly from Apple. The setup window shows progress, and you can cancel or retry a download.
 
-Version 0.2.0 adds the modern Intel MacinTalk 9.2.22 engine and matching SpeechDictionary 9.0.4 from macOS Sonoma 14.8.9. The legacy Lion engine remains available. Both use the downloadable Alex 2.0.36 voice. This is an experimental compatibility port, not a claim of complete macOS API or pronunciation parity.
+You can use the newer Sonoma speech engine or the older Lion engine. Keep both if you want to switch between them, or remove the one you do not use. This is a beta release.
 
 ## Install or update
 
-Version 0.2.1 fixes driver cleanup during synthesizer and configuration-profile handovers: old playback callbacks stop, worker threads finish, the Windows cancellation handle closes, and NVDA's settings-save callback is unregistered. Existing downloads and installed engines are preserved.
+Version 0.2.2 is prepared for the first Add-on Store submission. It includes the fix from 0.2.1 for Alex going silent when switching back from another synthesizer or configuration profile. Your existing voices and speech engines are kept.
 
 1. Install the `.nvda-addon` file and restart NVDA. It updates the existing Alex add-on; downloaded voices are kept.
 2. Open NVDA Settings, Alex, or Tools, Alex setup.
@@ -44,7 +44,7 @@ No Apple engines, installers, dictionaries, cache files, voice recordings, gener
 
 The modern Windows executable has produced speech under isolated Wine/QEMU with components extracted by the add-on's own preparation code. Local checks cover accented input, emoji names, modern dictionary extraction, version 0.1.0 migration, switching engines, shared recordings and download cleanup. Streaming tests check complete long passages, reading markers, rate, volume and interrupted speech through the real driver with NVDA API doubles. These checks use local Apple downloads that are never uploaded.
 
-The [modern engine notes](modern/README.md) record comparisons against native macOS. Speech timing and pronunciation differ for some passages. Actual NVDA playback, audio-device behavior and rapid navigation still need Windows listening tests; API test doubles and Wine cannot establish those behaviors.
+The [modern engine notes](modern/README.md) record comparisons against native macOS. Speech timing and pronunciation differ for some passages. Windows speech has been tested by a user; the latest profile-switching fix still needs more testing in everyday use.
 
 Hosted CI builds both Windows executables and runs data-free runtime checks on Windows. Python setup and archive tests use small, original synthetic fixtures.
 
@@ -60,7 +60,13 @@ python3 -m unittest discover -s tests -v
 python3 tools/package.py
 ```
 
-The modern builder downloads SHA-256-pinned LLVM-MinGW and a pinned Capstone checkout. All compilation is sequential. On Windows, run the legacy builder from an MSYS2 MINGW32 environment and the modern builder from MINGW64; see `.github/workflows/build.yml` for compiler options. Build output goes to `dist/alex-0.2.1.nvda-addon`. No Apple component is needed for building or packaging.
+The modern builder downloads SHA-256-pinned LLVM-MinGW and a pinned Capstone checkout. All compilation is sequential. On Windows, run the legacy builder from an MSYS2 MINGW32 environment and the modern builder from MINGW64; see `.github/workflows/build.yml` for compiler options. Build output goes to `dist/alex-0.2.2.nvda-addon`. No Apple component is needed for building or packaging.
+
+## License
+
+The NVDA add-on code is available under the [GNU General Public License, version 2 or later](LICENSE). The separate compatibility programs and build tools retain their [MIT license](licenses/Alex-MIT.txt). The add-on includes the license notices for its other components.
+
+These licenses cover this project's code, not Apple's files. Apple licenses its speech engine and voice separately. Downloading them from Apple does not change Apple's terms. See [the license information checked before submission](docs/addon-store.md#licensing).
 
 ## Credits
 
