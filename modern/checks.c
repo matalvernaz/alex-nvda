@@ -66,6 +66,51 @@ static int queue_check_run(void) {
 	return 0;
 }
 
+typedef struct {
+	mtx mutex;
+	cnd condition;
+	HANDLE entered;
+	int signalled;
+} condition_check;
+
+static DWORD WINAPI condition_signal_thread(void *argument) {
+	condition_check *check = argument;
+	WaitForSingleObject(check->entered, INFINITE);
+	sh_mutex_lock(&check->mutex);
+	check->signalled = 1;
+	sh_cond_signal(&check->condition);
+	sh_mutex_unlock(&check->mutex);
+	return 0;
+}
+
+static int condition_check_run(void) {
+	condition_check check = {0};
+	check.entered = CreateEvent(NULL, FALSE, FALSE, NULL);
+	sh_mutex_init(&check.mutex, NULL);
+	sh_cond_init(&check.condition, NULL);
+	sh_mutex_lock(&check.mutex);
+	int64_t deadline[2] = {0};
+	if (modern_condition_timedwait(&check.condition, &check.mutex, deadline) != 60) { return 1; }
+	deadline[1] = 1000000000;
+	if (modern_condition_timedwait(&check.condition, &check.mutex, deadline) != 22) { return 2; }
+	HANDLE thread = CreateThread(NULL, 0, condition_signal_thread, &check, 0, NULL);
+	if (!thread) { return 3; }
+	SetEvent(check.entered);
+	while (!check.signalled) {
+		uint64_t target = wall_us_scaled() * 1000ULL + (uint64_t)(g_speed * 5000000000.0);
+		deadline[0] = target / 1000000000ULL;
+		deadline[1] = target % 1000000000ULL;
+		if (modern_condition_timedwait(&check.condition, &check.mutex, deadline)) { return 4; }
+	}
+	sh_mutex_unlock(&check.mutex);
+	if (WaitForSingleObject(thread, 5000) != WAIT_OBJECT_0) { return 5; }
+	CloseHandle(thread);
+	CloseHandle(check.entered);
+	sh_cond_destroy(&check.condition);
+	sh_mutex_destroy(&check.mutex);
+	return 0;
+}
+
 int main(void) {
 #ifdef _WIN64
 	if (modern_windows_runtime_check()) { return 31; }
@@ -113,6 +158,7 @@ int main(void) {
 	sh_sprintf(formatted, "%s %ld %.1f", "64-bit", (glong)12345678901LL, 1.5);
 	if (strcmp(formatted, "64-bit 12345678901 1.5")) { return 30; }
 	if (queue_check_run()) { return 32; }
+	if (condition_check_run()) { return 33; }
 	fprintf(stdout, "PASS modern property lists, Unicode strings, semaphore, queued block lifetime/order and 64-bit audio timeline\n");
 	return 0;
 }

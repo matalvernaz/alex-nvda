@@ -21,6 +21,7 @@ static const shim g_shims[] = {
 	{ "_os_log_type_enabled", (void *)modern_log_enabled },
     { "_sinhf", (void *)sinhf },
     { "_pthread_cond_broadcast", (void *)modern_condition_broadcast },
+    { "_pthread_cond_timedwait", (void *)modern_condition_timedwait },
     { "_CEMStringContainsEmoji", (void *)modern_contains_emoji },
     { "_AudioComponentCount", (void *)modern_audio_component_count },
     { "_dispatch_workloop_create_inactive", (void *)modern_workloop_create },

@@ -200,7 +200,15 @@ static unsigned long long __cdecl sh_umoddi3(unsigned alo, unsigned ahi,
 #ifdef _WIN32
 static CRITICAL_SECTION g_guest_sync_cs;
 static LONG g_guest_sync_ready;
-#define GUEST_SYNC_LOCK()                                                      do { if (InterlockedCompareExchange(&g_guest_sync_ready, 1, 0) == 0)                InitializeCriticalSection(&g_guest_sync_cs);                           EnterCriticalSection(&g_guest_sync_cs); } while (0)
+#define GUEST_SYNC_LOCK() do { \
+    if (InterlockedCompareExchange(&g_guest_sync_ready, 1, 0) == 0) { \
+        InitializeCriticalSection(&g_guest_sync_cs); \
+        InterlockedExchange(&g_guest_sync_ready, 2); \
+    } else { \
+        while (InterlockedCompareExchange(&g_guest_sync_ready, 2, 2) != 2) Sleep(0); \
+    } \
+    EnterCriticalSection(&g_guest_sync_cs); \
+} while (0)
 #define GUEST_SYNC_UNLOCK() LeaveCriticalSection(&g_guest_sync_cs)
 #else
 /* Statically initialised, so there is no bring-up order to get wrong: a shim

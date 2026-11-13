@@ -8,8 +8,22 @@ static int __cdecl modern_log_enabled(const void *log, unsigned char type) {
 
 static int __cdecl modern_condition_broadcast(cnd *condition) {
 	if (!condition) { return 22; }
+	cnd_ready(condition);
 	WakeAllConditionVariable(cnd_native(condition));
 	return 0;
+}
+
+static int __cdecl modern_condition_timedwait(cnd *condition, mtx *mutex, const int64_t *deadline) {
+	if (!condition || !mutex || !deadline || deadline[0] < 0 || (uint64_t)deadline[0] > UINT64_MAX / 1000000000ULL || deadline[1] < 0 || deadline[1] >= 1000000000) { return 22; }
+	uint64_t target = (uint64_t)deadline[0] * 1000000000ULL + deadline[1];
+	uint64_t now = wall_us_scaled() * 1000ULL;
+	// The engine reads our accelerated wall clock. Convert only its remaining
+	// interval to a real wait, and release/reacquire the same native mutex.
+	double remaining = target > now ? (double)(target - now) / g_speed / 1000000.0 : 0;
+	DWORD wait = remaining >= INFINITE - 1 ? INFINITE - 1 : (DWORD)ceil(remaining);
+	cnd_ready(condition);
+	mtx_ready(mutex);
+	return SleepConditionVariableCS(cnd_native(condition), mtx_native(mutex), wait) ? 0 : 60; // Darwin ETIMEDOUT.
 }
 
 static unsigned __cdecl modern_audio_component_count(const unsigned *description) {
