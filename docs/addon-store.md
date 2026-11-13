@@ -1,6 +1,6 @@
 # Alex updates through NVDA
 
-Alex is being submitted to the beta channel of NVDA's Add-on Store. Submission does not mean it has been accepted. You can check the [submission and any replies](https://github.com/nvaccess/addon-datastore/issues?q=is%3Aissue+author%3Amatalvernaz+Alex).
+Alex 0.2.2 was [submitted to the beta channel](https://github.com/nvaccess/addon-datastore/issues/12996) on November 13, 2026. Submission does not mean it has been accepted. The issue shows the review status and any replies.
 
 ## Getting updates
 

@@ -6,9 +6,9 @@ You can use the newer Sonoma speech engine or the older Lion engine. Keep both i
 
 ## Install or update
 
-Version 0.2.2 is prepared for the first Add-on Store submission. It includes the fix from 0.2.1 for Alex going silent when switching back from another synthesizer or configuration profile. Your existing voices and speech engines are kept.
+Version 0.2.2 has been [submitted to the Add-on Store's beta channel](https://github.com/nvaccess/addon-datastore/issues/12996). It has not been accepted yet. It includes the fix from 0.2.1 for Alex going silent when switching back from another synthesizer or configuration profile. Your existing voices and speech engines are kept.
 
-1. Install the `.nvda-addon` file and restart NVDA. It updates the existing Alex add-on; downloaded voices are kept.
+1. [Download Alex 0.2.2](https://github.com/matalvernaz/alex-nvda/releases/download/v0.2.2/alex-0.2.2.nvda-addon), open the file to install it, and restart NVDA. It updates the existing Alex add-on; downloaded voices are kept.
 2. Open NVDA Settings, Alex, or Tools, Alex setup.
 3. Choose Modern or Legacy (Lion). Existing version 0.1.0 data is recognized as Legacy.
 4. Switch to another synthesizer while running setup. Press Download and set up Alex. Setup verifies the downloads, extracts the components, and tests actual speech before selecting the installation.
