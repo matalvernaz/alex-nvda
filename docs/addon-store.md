@@ -6,6 +6,21 @@ Alex uses the normal NVDA add-on identity, `alex`, and a numeric version. NVDA's
 
 The current repository is private. The Add-on Store needs a publicly downloadable add-on and accessible source for review. Making the repository public and submitting the registration are separate publication steps. Preparing the submission below does neither.
 
+### Submission review, 2026-11-13
+
+Registration has not been submitted. The existing 0.2.1 preparation output is a draft, not a compliance check. Its MIT license field reflects the current package; do not relabel that immutable release as GPL without correcting the actual distribution.
+
+Two licensing questions need separate treatment:
+
+- [NVDA's plugin and driver exception](https://github.com/nvaccess/nvda/blob/master/copying.txt#non-gpl-components-in-plugins-and-drivers) requires GPL version 2 or later for the NVDA integration, while allowing separately licensed synthesizer components. Our current root license and packaged project notice are MIT only. A corrected distribution can retain the upstream MIT notices and license independent native components separately.
+- [Apple's Sonoma license](https://www.apple.com/legal/sla/docs/macOSSonoma.pdf), sections 2F and 2J, restricts voice use and use of the software on non-Apple computers. Apple-only downloads avoid our redistribution of those files; they do not themselves establish permission to run the extracted engine on Windows. No separate permission has been established in this review. This is not a determination of enforceability or an NV Access rejection.
+
+Comparable projects exist. [ClassicVoices for NVDA](https://github.com/Levi-Gobin/classicvoices/blob/main/nvda/README.md) downloads Apple firmware and voices after installation. [Panthera Speech](https://github.com/tgeczy/panthera-speech) runs Apple's older MacinTalk engines, including Alex, on Windows and excludes Apple data. [outspoken-nvda](https://github.com/tgeczy/outspoken-nvda) similarly requires users to supply old Macintosh speech engines. These projects establish technical and distribution precedent, not permission from Apple.
+
+The Store's 616 add-on IDs, `submitters.json`, and issue searches contained no registration for those three projects when checked. Therefore Store acceptance of this Apple-engine approach remains unconfirmed. [Tiflotecnia Voices](https://github.com/nvaccess/addon-datastore/blob/master/addons/tiflotecniaVoices/4.2.1.json) is an accepted proprietary-synthesizer example, but explicitly requires a voice license and does not establish permission for Apple's engines.
+
+The ID `alex` and version `0.2.1` meet the published format rules; `2024.1.0` and `2026.1.0` are recognized, nonexperimental API versions in the current catalog. Public anonymous downloads cannot be verified while the repository remains private. First-time publisher approval, automatic validation and the Store's malware scan remain outstanding. No assumption about the outcome of manual review is made.
+
 After publishing a checked release, run:
 
 ```sh
