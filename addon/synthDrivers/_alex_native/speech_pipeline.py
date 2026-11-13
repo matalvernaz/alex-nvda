@@ -120,7 +120,7 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
         """
         while not self._stopped:
             item = self._queue.get()
-            if item is None:
+            if item is None or self._stopped:
                 break
             epoch = self._epoch
             #: Read before `_join`, which strips the indexes it reports early:
@@ -621,7 +621,8 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
             while self._marks and self._marks[0][0] <= self._playedBytes:
                 due.append(self._marks.pop(0)[1])
         for index in due:
-            synthIndexReached.notify(synth=self, index=index)
+            if not self._stopped:
+                synthIndexReached.notify(synth=self, index=index)
 
     def _markReached(self, index):
         """A mark came off the audio queue: report it now if its audio has
@@ -631,7 +632,7 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
                     and self._playedBytes < self._fedBytes)
             if wait:
                 self._marks.append((self._fedBytes, index))
-        if not wait:
+        if not wait and not self._stopped:
             synthIndexReached.notify(synth=self, index=index)
 
     def _marksDrained(self):
@@ -643,7 +644,8 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
             del self._marks[:]
             self._fedBytes = self._playedBytes = 0
         for index in due:
-            synthIndexReached.notify(synth=self, index=index)
+            if not self._stopped:
+                synthIndexReached.notify(synth=self, index=index)
 
     def _resetMarks(self):
         """cancel(): whatever was held belongs to speech nobody will hear."""
@@ -660,7 +662,7 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
         """
         while not self._stopped:
             item = self._audioQueue.get()
-            if item is None:
+            if item is None or self._stopped:
                 break
             kind, value, tag = item
             # Audio carries the epoch it was rendered under, checked *here*,
@@ -785,7 +787,8 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
                             else:
                                 self._feedPiece(piece)
                 elif kind == "index":
-                    synthIndexReached.notify(synth=self, index=value)
+                    if not self._stopped:
+                        synthIndexReached.notify(synth=self, index=value)
                 elif kind == "mark":
                     self._markReached(value)
                 elif kind == "done":
@@ -803,8 +806,9 @@ class SpeechPipelineMixin(MarkerPipelineMixin):
                         self._playerIdle = True
                         # Before the completion notice, so NVDA hears every
                         # index of an utterance before it hears the end of it.
-                        self._marksDrained()
-                        synthDoneSpeaking.notify(synth=self)
+                        if not self._stopped:
+                            self._marksDrained()
+                            synthDoneSpeaking.notify(synth=self)
             except Exception as e:
                 # Never silently: a feed or idle that fails is exactly the
                 # failure nobody can account for afterwards.

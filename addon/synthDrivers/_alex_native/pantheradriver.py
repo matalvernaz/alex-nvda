@@ -684,6 +684,7 @@ class PantheraDriver(HostMixin, SpeechPipelineMixin, SynthDriver):
         self._worker = threading.Thread(target=self._run, name=self.name,
                                         daemon=True)
         self._worker.start()
+        log.info("%s: speech driver initialized", self.name)
 
     # -- plumbing ----------------------------------------------------------
     def _probeOnDone(self):
@@ -907,19 +908,37 @@ class PantheraDriver(HostMixin, SpeechPipelineMixin, SynthDriver):
             pass
 
     def terminate(self):
+        if self._stopped:
+            return
         self._stopped = True
-        self.cancel()
-        self._queue.put(None)
-        self._audioQueue.put(None)
-        with self._procLock:
-            proc, self._proc = self._proc, None
-            standby, self._standby = self._standby, None
-        self._stopHost(proc, graceful=True)
-        self._stopHost(standby, graceful=True)
         try:
-            self._player.close()
-        except Exception:
-            pass
+            self.cancel()
+            self._queue.put(None)
+            self._audioQueue.put(None)
+            with self._procLock:
+                proc, self._proc = self._proc, None
+                standby, self._standby = self._standby, None
+            # This instance will never speak again. Killing its read-only host
+            # releases blocked pipe reads without waiting for abandoned speech.
+            self._stopHost(proc)
+            self._stopHost(standby)
+            for thread in (self._worker, self._feeder):
+                if thread is not threading.current_thread():
+                    thread.join(timeout=1)
+                    if thread.is_alive():
+                        log.warning("%s: worker %s did not finish during shutdown",
+                                    self.name, thread.name)
+            try:
+                self._player.close()
+            except Exception:
+                log.debugWarning("%s: audio shutdown failed", self.name, exc_info=True)
+        finally:
+            try:
+                self._closeCancelEvent()
+            finally:
+                # NVDA removes this instance's settings-save callback here.
+                super().terminate()
+                log.info("%s: speech driver terminated", self.name)
 
     # -- settings ----------------------------------------------------------
     def _get_inflection(self):

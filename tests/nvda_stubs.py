@@ -326,6 +326,7 @@ def _install_fake_nvda():
         VolumeSetting = _builtinSetting("volume")
         InflectionSetting = _builtinSetting("inflection")
         def __init__(self): pass
+        def terminate(self): pass
     class _Notifier(object):
         """Counts, and lets a test wait for the next notification.
 

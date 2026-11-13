@@ -574,9 +574,17 @@ class HostMixin(object):
         Best effort throughout: every failure here costs responsiveness after
         an interruption and nothing else, so none of it is worth raising over.
         """
+        self._cancelKernel = None
         try:
             import ctypes
-            k32 = ctypes.windll.kernel32
+            from ctypes import wintypes
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL,
+                                        wintypes.BOOL, wintypes.LPCWSTR]
+            k32.CreateEventW.restype = wintypes.HANDLE
+            for function in (k32.SetEvent, k32.ResetEvent, k32.CloseHandle):
+                function.argtypes = [wintypes.HANDLE]
+                function.restype = wintypes.BOOL
             name = ("Local\\%s-cancel-%d-%d"
                     % (self.name, os.getpid(), id(self)))
             # Manual reset off, initial state off: the host consumes the signal
@@ -584,6 +592,7 @@ class HostMixin(object):
             # sends the next request.
             h = k32.CreateEventW(None, False, False, name)
             if h:
+                self._cancelKernel = k32
                 self._cancelEvent = h
                 self._cancelEventName = name
         except Exception as e:
@@ -594,8 +603,7 @@ class HostMixin(object):
         if not self._cancelEvent:
             return
         try:
-            import ctypes
-            ctypes.windll.kernel32.SetEvent(self._cancelEvent)
+            self._cancelKernel.SetEvent(self._cancelEvent)
         except Exception:
             pass
 
@@ -604,10 +612,16 @@ class HostMixin(object):
         if not self._cancelEvent:
             return
         try:
-            import ctypes
-            ctypes.windll.kernel32.ResetEvent(self._cancelEvent)
+            self._cancelKernel.ResetEvent(self._cancelEvent)
         except Exception:
             pass
+
+    def _closeCancelEvent(self):
+        handle, self._cancelEvent = self._cancelEvent, None
+        self._cancelEventName = None
+        if handle and self._cancelKernel is not None:
+            self._cancelKernel.CloseHandle(handle)
+        self._cancelKernel = None
 
     def _watchStderr(self, proc):
         """Put whatever the host complains about into NVDA's log.

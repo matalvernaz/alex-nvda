@@ -6,6 +6,8 @@ Version 0.2.0 adds the modern Intel MacinTalk 9.2.22 engine and matching SpeechD
 
 ## Install or update
 
+Version 0.2.1 fixes driver cleanup during synthesizer and configuration-profile handovers: old playback callbacks stop, worker threads finish, the Windows cancellation handle closes, and NVDA's settings-save callback is unregistered. Existing downloads and installed engines are preserved.
+
 1. Install the `.nvda-addon` file and restart NVDA. It updates the existing Alex add-on; downloaded voices are kept.
 2. Open NVDA Settings, Alex, or Tools, Alex setup.
 3. Choose Modern or Legacy (Lion). Existing version 0.1.0 data is recognized as Legacy.
@@ -58,7 +60,7 @@ python3 -m unittest discover -s tests -v
 python3 tools/package.py
 ```
 
-The modern builder downloads SHA-256-pinned LLVM-MinGW and a pinned Capstone checkout. All compilation is sequential. On Windows, run the legacy builder from an MSYS2 MINGW32 environment and the modern builder from MINGW64; see `.github/workflows/build.yml` for compiler options. Build output goes to `dist/alex-0.2.0.nvda-addon`. No Apple component is needed for building or packaging.
+The modern builder downloads SHA-256-pinned LLVM-MinGW and a pinned Capstone checkout. All compilation is sequential. On Windows, run the legacy builder from an MSYS2 MINGW32 environment and the modern builder from MINGW64; see `.github/workflows/build.yml` for compiler options. Build output goes to `dist/alex-0.2.1.nvda-addon`. No Apple component is needed for building or packaging.
 
 ## Credits
 
