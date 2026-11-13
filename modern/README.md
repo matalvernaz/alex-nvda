@@ -18,6 +18,8 @@ Five passages were rendered with the released Lion host, this prototype, and the
 
 Audio is mono PCM16 at 22,050 Hz. The greeting and fast-reading recordings are sample-identical between the old and new portable engines. For fast reading, pronunciation and phrasing, the modern prototype's RMS error against native macOS is below one PCM unit. Greeting and number handling still have timing differences against native output and need investigation. Different output is not, by itself, evidence of better sound.
 
+The final Windows build matched the Linux modern greeting, fast-reading, pronunciation and numbers recordings sample-for-sample. Its phrasing recording had two additional zero samples in pauses, with all speech samples otherwise identical. Accented input and CLDR-expanded emoji also matched the earlier Windows renders. These are local comparison results, not an audio-device or listening-quality test.
+
 The old host was also tested with a working SQLite runtime. This did not change its frame counts. A 64-bit Lion build with both SQLite and the newly implemented XML property-list reader still produced the old pronunciation result. The observed differences therefore survive those two compatibility-layer checks.
 
 The newer prototype rendered a complete greeting with a measured peak resident memory of about 79 MiB, including QEMU. Cache address space is reserved sparsely; only component segments and required import pages are committed. A large virtual address range does not require an equally large allocation of RAM.
